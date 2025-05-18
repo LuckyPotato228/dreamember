@@ -1,13 +1,26 @@
-import requests
 from flask import Flask, request, jsonify
+import requests
 
 app = Flask(__name__)
 
-@app.route('/webhook', methods=['POST'])
+@app.route("/webhook", methods=["POST"])
 def handle_smartapp():
     data = request.json
-    text = data["request"]["original_utterance"]
-    device_id = data["meta"]["client_id"]  # или временно: device_id = "91"
+    print("🌐 Входящий JSON:", data)
+
+    try:
+        text = data["request"]["original_utterance"]
+        device_id = data["meta"]["client_id"]
+    except KeyError as e:
+        print("❌ Ключ не найден:", e)
+        return jsonify({
+            "version": data.get("version", "1.0"),
+            "session": data.get("session", {}),
+            "response": {
+                "text": "Не могу обработать запрос, повтори пожалуйста ещё раз.",
+                "end_session": False
+            }
+        })
 
     payload = {
         "text": text,
@@ -17,6 +30,7 @@ def handle_smartapp():
     try:
         response = requests.post("https://dreamember.onrender.com/api/dream", json=payload)
         response.raise_for_status()
+        print("✅ Сон успешно отправлен:", payload)
 
         return jsonify({
             "version": data["version"],
@@ -28,13 +42,12 @@ def handle_smartapp():
         })
 
     except Exception as e:
-        print("Ошибка при записи сна:", e)
-
+        print("🔥 Ошибка при отправке сна:", e)
         return jsonify({
             "version": data["version"],
             "session": data["session"],
             "response": {
-                "text": "Произошла ошибка при записи сна. Попробуй позже.",
+                "text": "Произошла ошибка при записи сна.",
                 "end_session": False
             }
         })
