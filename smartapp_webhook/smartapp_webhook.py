@@ -1,64 +1,66 @@
-import requests
 from flask import Flask, request, jsonify
+import requests
 
 app = Flask(__name__)
+sessions = {}
 
 @app.route('/webhook', methods=['POST'])
-def handle_chatapp():
+def handle_smartapp():
     data = request.json
-    print("🌐 Входящий JSON:", data)
+    session_id = data.get("sessionId")
+    user_id = data.get("uuid", {}).get("userId")
+    text = data.get("payload", {}).get("message", {}).get("original_text", "")
 
-    try:
-        text = data["payload"]["message"]["original_text"]
-        device_id = data["uuid"].get("userId", "chatapp-test")
+    # Проверка: если это активационная фраза
+    if text.lower() in ["запусти dreamember", "открой dreamember"]:
+        sessions[session_id] = {"awaiting_dream_text": True, "device_id": user_id}
+        return jsonify({
+            "messageName": "ANSWER_TO_USER",
+            "sessionId": session_id,
+            "messageId": data["messageId"],
+            "payload": {
+                "items": [{"bubble": {"text": "Говори, что тебе приснилось"}}],
+                "pronounceText": "Говори, что тебе приснилось",
+                "end_session": False
+            }
+        })
 
-        print(f"📥 Текст: '{text}', device_id: {device_id}")
+    # Если ожидается сон от пользователя
+    if session_id in sessions and sessions[session_id].get("awaiting_dream_text"):
+        sessions[session_id]["awaiting_dream_text"] = False
+        device_id = sessions[session_id]["device_id"]
 
         payload = {
             "text": text,
             "deviceID": device_id
         }
-
-        response = requests.post("https://dreamember.onrender.com/api/dream", json=payload)
-        response.raise_for_status()
-
-        print("✅ Сон записан:", payload)
+        try:
+            requests.post("https://dreamember.onrender.com/api/dream", json=payload)
+        except Exception:
+            pass  # можно логировать
 
         return jsonify({
             "messageName": "ANSWER_TO_USER",
-            "sessionId": data["sessionId"],
+            "sessionId": session_id,
             "messageId": data["messageId"],
-            "uuid": data["uuid"],
             "payload": {
-                "items": [
-                    {
-                        "bubble": {
-                            "text": "Сон записан! Посмотри его на сайте dreamember.onrender.com"
-                        }
-                    }
-                ],
-                "end_session": False
+                "items": [{"bubble": {"text": "Сон записан!"}}],
+                "pronounceText": "Сон записан!",
+                "end_session": True
             }
         })
 
-    except Exception as e:
-        print("❌ Ошибка обработки запроса:", e)
-        return jsonify({
-            "messageName": "ANSWER_TO_USER",
-            "sessionId": data.get("sessionId", ""),
-            "messageId": data.get("messageId", ""),
-            "uuid": data.get("uuid", {}),
-            "payload": {
-                "items": [
-                    {
-                        "bubble": {
-                            "text": "Произошла ошибка при записи сна."
-                        }
-                    }
-                ],
-                "end_session": False
-            }
-        })
+    # По умолчанию — ответ ни о чём
+    return jsonify({
+        "messageName": "ANSWER_TO_USER",
+        "sessionId": session_id,
+        "messageId": data["messageId"],
+        "payload": {
+            "items": [{"bubble": {"text": "Скажи 'запусти Dreamember'"}}],
+            "pronounceText": "Скажи 'запусти Dreamember'",
+            "end_session": False
+        }
+    })
 
 if __name__ == "__main__":
     app.run(port=8080)
