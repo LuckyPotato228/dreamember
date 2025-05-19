@@ -78,10 +78,10 @@ def answer(text, data):
         "sessionId": data.get("sessionId"),
         "messageId": data.get("messageId"),
         "payload": {
-            "items": [{"bubble": {"text": text}}],
-            "pronounceText": text,
-            "end_session": False
-        }
+    "text": text,  # вместо "bubble"
+    "pronounceText": text,
+    "end_session": False
+                    }
     }
 
 def default_error(data):
