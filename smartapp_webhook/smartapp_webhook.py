@@ -1,21 +1,30 @@
 from __future__ import annotations
-
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 import requests
 import traceback
+import time
 
 app = Flask(__name__)
 
 # ------------------ состояние: ключ — userId ------------------
-# user_state[user_id] = {"awaiting": bool, "registered": bool}
 user_state: dict[str, dict[str, bool]] = {}
-
 activation_phrases = {
     "запусти dreamember",
     "включи запись сна",
     "запиши сон",
     "запиши мой сон",
 }
+
+@app.route("/health", methods=["GET", "HEAD"])
+def health() -> Response:
+    """Лёгкий энд-пойнт для Render/Sber мониторинга."""
+    payload = {"status": "ok"}
+    # небольшая доп-инфа по запросу ?verbose=1  (не нужна модерации)
+    if request.method == "GET" and request.args.get("verbose") == "1":
+        payload["ts"] = int(time.time())
+        payload["users_in_mem"] = len(user_state)
+    return jsonify(payload)
+
 
 # ——— (опц.) быстрое REST-проверка, зарегистрировано ли устройство ———
 def is_registered(device_id: str) -> bool:
