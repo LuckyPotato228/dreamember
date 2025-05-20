@@ -1,11 +1,14 @@
+from __future__ import annotations
+
 from flask import Flask, request, jsonify
 import requests
 import traceback
 
 app = Flask(__name__)
 
-# ------------------ состояние: ключом делаем userId -------------------------
-user_state = {}  # user_state[user_id] = {"awaiting": bool}
+# ------------------ состояние: ключ — userId ------------------
+# user_state[user_id] = {"awaiting": bool, "registered": bool}
+user_state: dict[str, dict[str, bool]] = {}
 
 activation_phrases = {
     "запусти dreamember",
@@ -14,6 +17,23 @@ activation_phrases = {
     "запиши мой сон",
 }
 
+# ——— (опц.) быстрое REST-проверка, зарегистрировано ли устройство ———
+def is_registered(device_id: str) -> bool:
+    """
+    True  → бэк знает такой deviceID
+    False → не зарегистрирован или бэк недоступен
+    Если у тебя нет такого эндпойнта — оставь функцию как есть,
+    она всегда вернёт False и логика будет работать за счёт кэша.
+    """
+    try:
+        r = requests.get(
+            f"https://dreamember.onrender.com/api/device/{device_id}/exists",
+            timeout=3,
+        )
+        return r.status_code == 200
+    except requests.RequestException:
+        return False
+
 
 @app.route("/webhook", methods=["POST"])
 def handle_smartapp():
@@ -21,7 +41,6 @@ def handle_smartapp():
     print("🌐 Входящий JSON:", data)
 
     user_id = data.get("uuid", {}).get("userId")
-    session_id = data.get("sessionId")  # логируем, но не привязываемся к нему
     text = (
         data.get("payload", {})
         .get("message", {})
@@ -34,43 +53,55 @@ def handle_smartapp():
         print("⚠️ Нет userId или текста")
         return jsonify(default_error(data))
 
-    state = user_state.setdefault(user_id, {"awaiting": False})
+    # -------- получаем/создаём state пользователя -------------
+    state = user_state.setdefault(
+        user_id, {"awaiting": False, "registered": False}
+    )
 
-    # ── 1. Активационная фраза ──────────────────────────────────────────────
+    # однократная ленивая проверка регистрации через бэк (см. функцию выше)
+    if not state["registered"]:
+        state["registered"] = is_registered(user_id)
+
+    # ── 1. Активационная фраза ───────────────────────────────
     if text in activation_phrases:
         if state["awaiting"]:
-            # уже ждём сон → не сбрасываем, а напоминаем
             return jsonify(
-                answer(
-                    "Я уже готова! Просто расскажи свой сон текстом.",
-                    data,
-                )
+                answer("Я уже готова! Просто расскажи свой сон.", data)
             )
 
         state["awaiting"] = True
+
+        if state["registered"]:
+            # пользователь ранее зарегистрировался → сразу ждём сон
+            return jsonify(
+                answer("Готова записать! Расскажи, что тебе снилось.", data)
+            )
+
+        # регистрация ещё не пройдена — выводим инструкцию
         msg = (
             f"Привет! Чтобы я могла записать твой сон, зарегистрируйся на сайте "
             f"<https://dreamember.onrender.com/>.\n\n"
             f"Твой идентификатор: **{user_id}**.\n"
-            f"Когда закончишь регистрацию, просто расскажи свой сон."
+            f"Когда закончишь регистрацию, расскажи свой сон."
         )
-        print(f"🆔 Пользователь {user_id}: перевела в режим ожидания сна")
+        print(f"🆔 Пользователь {user_id}: ждём регистрацию")
         return jsonify(answer(msg, data))
 
-    # ── 2. Получили текст сна, если мы его ждём ─────────────────────────────
+    # ── 2. Пришёл текст сна, если ждём ────────────────────────
     if state["awaiting"]:
-        state["awaiting"] = False  # сбрасываем сразу, чтобы не дублировалось
+        state["awaiting"] = False            # сбрасываем флаг
         payload = {"text": text, "deviceID": user_id}
 
         try:
-            print(f"📤 Отправляем сон пользователя {user_id!s}")
+            print(f"📤 Отправляем сон пользователя {user_id}")
             resp = requests.post(
                 "https://dreamember.onrender.com/api/dream", json=payload, timeout=5
             )
 
             if resp.status_code in (401, 403):
+                # не зарегистрирован → просим пройти регистрацию, ждём повторно
                 print("⚠️ Пользователь ещё не зарегистрирован")
-                state["awaiting"] = True  # ждём повторно после регистрации
+                state["awaiting"] = True
                 return jsonify(
                     answer(
                         f"Ты ещё не зарегистрирован. Твой идентификатор: {user_id}. "
@@ -81,20 +112,21 @@ def handle_smartapp():
 
             resp.raise_for_status()
             print("✅ Сон сохранён")
+            state["registered"] = True       # кэшируем факт регистрации
             return jsonify(answer("Сон записан! Хороших снов 🤍", data))
 
         except Exception:
-            # при ошибке даём шанс повторить сон
+            # ошибка сети / сервера — даём шанс повторить
             state["awaiting"] = True
             print("❌ Ошибка при отправке сна:", traceback.format_exc())
             return jsonify(
                 answer(
-                    "Что-то пошло не так при записи сна. Попробуй повторить чуть позже.",
+                    "Что-то пошло не так при записи сна. Попробуй повторить позже.",
                     data,
                 )
             )
 
-    # ── 3. Непонятный ввод ──────────────────────────────────────────────────
+    # ── 3. Остальное — непонятный ввод ───────────────────────
     print(f"🤷 Не распознано (user {user_id}): {text}")
     return jsonify(
         answer(
@@ -104,7 +136,7 @@ def handle_smartapp():
     )
 
 
-# -------------------------- сервисные функции -------------------------------
+# ---------------- сервисные функции ---------------------------
 def answer(text: str, data: dict, end_session: bool = False) -> dict:
     """формирует корректный ANSWER_TO_USER для SmartApp"""
     return {
@@ -115,14 +147,7 @@ def answer(text: str, data: dict, end_session: bool = False) -> dict:
         "payload": {
             "pronounceText": text,
             "pronounceTextType": "application/text",
-            "items": [
-                {
-                    "bubble": {
-                        "text": text,
-                        "markdown": True,
-                    }
-                }
-            ],
+            "items": [{"bubble": {"text": text, "markdown": True}}],
             "auto_listening": False,
             "finished": end_session,
         },
