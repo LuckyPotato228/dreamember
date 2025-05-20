@@ -122,7 +122,7 @@ def handle_smartapp():
             resp.raise_for_status()
             print("✅ Сон сохранён")
             state["registered"] = True       # кэшируем факт регистрации
-            return jsonify(answer("Сон записан! Хороших снов 🤍", data))
+            return jsonify(answer("Сон записан! Хорошего вам дня 🤍", data))
 
         except Exception:
             # ошибка сети / сервера — даём шанс повторить
