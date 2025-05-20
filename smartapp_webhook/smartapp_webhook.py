@@ -123,7 +123,7 @@ def handle_smartapp():
             print("✅ Сон сохранён")
             state["registered"] = True  # кэшируем факт регистрации
             return jsonify(answer(
-                "Сон записан! Хороших снов 🤍\n\nЗагляни на сайт, чтобы прочитать его: <https://dreamember.onrender.com/>",
+                "Сон записан! Хорошего вам дня 🤍\n\nЗагляни на сайт, чтобы прочитать его: <https://dreamember.onrender.com/>",
                 data
             ))
 
