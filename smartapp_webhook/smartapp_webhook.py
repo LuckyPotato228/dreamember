@@ -146,7 +146,7 @@ def handle_smartapp():
             return jsonify(
                 answer(
                     "Сон записан!\n\n"
-                    "Посмотреть его можно на сайте: https://dreamember.onrender.com/",
+                    "Посмотреть его можно на сайте: <https://dreamember.onrender.com/>",
                     data,
                 )
             )
