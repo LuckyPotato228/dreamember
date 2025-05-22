@@ -86,11 +86,13 @@ def handle_smartapp():
         if state["registered"]:
             return jsonify(answer("Готов записать сон. Начинайте рассказывать.", data))
 
+        register_url = f"https://dreamember.onrender.com/?device={user_id}"
+
         msg = (
             "Привет! Я «Дримембер» — дневник снов.\n\n"
-            "Чтобы сохранить сон, сначала зарегистрируйтесь на сайте "
-            "<https://dreamember.onrender.com/register?device="
-            f"{user_id}>.\n"
+            "Чтобы сохранить сон, сначала откройте ссылку "
+            f"[dreamember.onrender.com]({register_url})\n"
+            "и нажмите «Регистрация» — идентификатор колонки подставится автоматически.\n"
             "После регистрации скажите «Запиши сон» и расскажите его."
         )
         return jsonify(answer(msg, data))
