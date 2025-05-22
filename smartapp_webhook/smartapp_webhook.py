@@ -87,7 +87,7 @@ def handle_smartapp():
             return jsonify(answer("Готов записать сон. Начинайте рассказывать.", data))
 
         # ссылка на корень сайта
-        register_url = "https://dreamember.onrender.com/"
+        register_url = "<https://dreamember.onrender.com/>"
 
         msg = (
             "Привет! Я «Дримембер» — дневник снов.\n\n"
@@ -127,7 +127,7 @@ def handle_smartapp():
             return jsonify(
                 answer(
                     "Сон записан!\n\n"
-                    "Посмотреть его можно на сайте: https://dreamember.onrender.com/",
+                    "Посмотреть его можно на сайте: <https://dreamember.onrender.com/>",
                     data,
                 )
             )
