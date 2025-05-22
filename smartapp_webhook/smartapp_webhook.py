@@ -87,7 +87,7 @@ def handle_smartapp():
             return jsonify(answer("Готов записать сон. Начинайте рассказывать.", data))
 
         # ссылка на корень сайта
-        register_url = "<https://dreamember.onrender.com/>"
+        register_url = "https://dreamember.onrender.com/"
 
         msg_main = (
             "Привет! Я «Дримембер» — дневник снов.\n\n"
@@ -97,21 +97,14 @@ def handle_smartapp():
             "После регистрации вернитесь и скажите «Запиши сон»."
         )
 
-        msg_id = f"Ваш идентификатор устройства:\n{user_id}"
-
-        # формируем payload вручную: два bubble + кнопка-подсказка
+        # ответ: два bubble, второй — только ID
         payload = {
             "pronounceText": msg_main,
             "pronounceTextType": "application/text",
             "items": [
                 {"bubble": {"text": msg_main, "markdown": True}},
-                {"bubble": {"text": msg_id, "markdown": True}},
+                {"bubble": {"text": user_id, "markdown": False}},  # только ID
             ],
-            "suggestions": {
-                "buttons": [
-                    {"title": user_id, "action": {"text": user_id}}
-                ]
-            },
             "auto_listening": False,
         }
 
@@ -149,7 +142,7 @@ def handle_smartapp():
             return jsonify(
                 answer(
                     "Сон записан!\n\n"
-                    "Посмотреть его можно на сайте: <https://dreamember.onrender.com/>",
+                    "Посмотреть его можно на сайте: https://dreamember.onrender.com/",
                     data,
                 )
             )
@@ -180,10 +173,6 @@ def answer(
     suggestions: list[str] | None = None,
     end_session: bool = False,
 ) -> dict:
-    """
-    Формируем ANSWER_TO_USER. Можно передать список подсказок-кнопок.
-    Каждая строка suggestions станет кнопкой; при нажатии текст вставится в поле ввода.
-    """
     payload = {
         "pronounceText": text,
         "pronounceTextType": "application/text",
