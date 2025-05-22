@@ -9,32 +9,29 @@ from flask import Flask, jsonify, request, Response
 
 app = Flask(__name__)
 
-# ------------- состояние пользователя (id → dict) -----------------
+# ---------- состояние пользователя --------------------------------
 user_state: dict[str, dict[str, bool]] = {}
 
+# --- АКТИВАЦИОННЫЕ ФРАЗЫ (ровно то, что внесли в Studio) ----------
 activation_phrases: Final = {
-    "запусти dreamember",
-    "включи запись сна",
+    "записать сон",      # варианты, которые люди говорят спонтанно
     "запиши сон",
-    "запиши мой сон",
+    "запись сна",
+    "запись снов",
+    "дневник снов",
 }
 help_phrases: Final = {"помощь", "help", "что ты умеешь", "как пользоваться"}
 
-# -------------------------------------------------------------------
+# ------------------------------------------------------------------
 @app.route("/health", methods=["GET", "HEAD"])
 def health() -> Response:
-    """Пинг для Render/Sber."""
     payload = {"status": "ok"}
     if request.method == "GET" and request.args.get("verbose") == "1":
-        payload["ts"] = int(time.time())
-        payload["users_in_mem"] = len(user_state)
+        payload |= {"ts": int(time.time()), "users_in_mem": len(user_state)}
     return jsonify(payload)
 
 
 def is_registered(device_id: str) -> bool:
-    """
-    Проверка, есть ли колонка в БД сайта.
-    """
     try:
         r = requests.get(
             f"https://dreamember.onrender.com/api/device/{device_id}/exists",
@@ -45,7 +42,7 @@ def is_registered(device_id: str) -> bool:
         return False
 
 
-# ------------------------- WEBHOOK ---------------------------------
+# ----------------------------- WEBHOOK ----------------------------
 @app.route("/webhook", methods=["POST"])
 def handle_smartapp():
     data = request.json
@@ -61,60 +58,44 @@ def handle_smartapp():
     )
 
     if not user_id or not text:
-        print("⚠️ Нет userId или текста")
         return jsonify(default_error(data))
 
     state = user_state.setdefault(user_id, {"awaiting": False, "registered": False})
-
-    # разовая проверка регистрации
     if not state["registered"]:
         state["registered"] = is_registered(user_id)
 
-    # ---------- команда ПОМОЩЬ ------------------------------------
+    # ---------- help ------------------------------------------------
     if text in help_phrases:
         return jsonify(
             answer(
-                "Я дневник снов Dreamember. Чтобы сохранить сон: \n"
-                "1) Скажите «Запиши мой сон».\n"
-                "2) Расскажите сон голосом (до 90 с).\n"
-                "3) Посмотрите запись на сайте dreamember.onrender.com.",
+                "Я «Дримембер» — дневник ваших снов. Чтобы сохранить сон:\n"
+                "1) Скажите «Запиши сон» или «Дневник снов».\n"
+                "2) Расскажите сон до 90 секунд.\n"
+                "3) Посмотрите запись на dreamember.onrender.com.",
                 data,
             )
         )
 
-    # ---------- активационные фразы --------------------------------
+    # ---------- активация ------------------------------------------
     if text in activation_phrases:
-        # если уже ждём сон
         if state["awaiting"]:
-            return jsonify(
-                answer(
-                    "Я могу записать ваш сон. Просто расскажите его.",
-                    data,
-                )
-            )
+            return jsonify(answer("Я слушаю. Расскажите ваш сон.", data))
 
         state["awaiting"] = True
 
         if state["registered"]:
-            # зарегистрирован ⇒ сразу ждём текст сна
-            return jsonify(
-                answer(
-                    "Могу записать ваш сон. Расскажите, что вам снилось.",
-                    data,
-                )
-            )
+            return jsonify(answer("Готов записать сон. Начинайте рассказывать.", data))
 
-        # регистрация ещё не выполнена
         msg = (
-            "Привет! Я Dreamember — дневник снов.\n\n"
-            "Чтобы сохранить ваш сон, сначала зарегистрируйтесь на сайте "
-            "<https://dreamember.onrender.com/>.\n"
-            f"Ваш идентификатор устройства: **{user_id}**.\n"
-            "Введите его на сайте, затем вернитесь и скажите: «Запиши мой сон»."
+            "Привет! Я «Дримембер» — дневник снов.\n\n"
+            "Чтобы сохранить сон, сначала зарегистрируйтесь на сайте "
+            "<https://dreamember.onrender.com/register?device="
+            f"{user_id}>.\n"
+            "После регистрации скажите «Запиши сон» и расскажите его."
         )
         return jsonify(answer(msg, data))
 
-    # ---------- получили текст сна ---------------------------------
+    # ---------- пришёл текст сна -----------------------------------
     if state["awaiting"]:
         state["awaiting"] = False
         payload = {"text": text, "deviceID": user_id}
@@ -130,7 +111,7 @@ def handle_smartapp():
                     answer(
                         "Похоже, вы ещё не завершили регистрацию. "
                         f"Идентификатор устройства: {user_id}. "
-                        "Введите его на сайте и повторите команду.",
+                        "Перейдите по ссылке из сообщения и попробуйте снова.",
                         data,
                     )
                 )
@@ -139,8 +120,8 @@ def handle_smartapp():
             state["registered"] = True
             return jsonify(
                 answer(
-                    "Сон записан! \n\n"
-                    "Посмотреть запись можно на сайте: <https://dreamember.onrender.com/>",
+                    "Сон записан!\n\n"
+                    "Посмотреть его можно на сайте: <https://dreamember.onrender.com/>",
                     data,
                 )
             )
@@ -150,7 +131,7 @@ def handle_smartapp():
             print("❌ Ошибка при отправке сна:", traceback.format_exc())
             return jsonify(
                 answer(
-                    "Сервер временно недоступен. Повторите попытку через минуту.",
+                    "Сервер сейчас недоступен. Повторите попытку через минуту.",
                     data,
                 )
             )
@@ -158,16 +139,14 @@ def handle_smartapp():
     # ---------- fallback -------------------------------------------
     return jsonify(
         answer(
-            "Я не расслышал команду. "
-            "Скажите «Запиши мой сон» или «Помощь», чтобы узнать подробности.",
+            "Не расслышал. Скажите «Дневник снов» или «Помощь», чтобы узнать команды.",
             data,
         )
     )
 
 
-# ---------------- вспомогательные функции -------------------------
+# ----------------- утилиты ----------------------------------------
 def answer(text: str, data: dict, end_session: bool = False) -> dict:
-    """Корректный ANSWER_TO_USER для SmartApp"""
     return {
         "messageName": "ANSWER_TO_USER",
         "sessionId": data["sessionId"],
@@ -192,5 +171,4 @@ def default_error(data: dict) -> dict:
 if __name__ == "__main__":
     import os
 
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
