@@ -89,20 +89,39 @@ def handle_smartapp():
         # ссылка на корень сайта
         register_url = "<https://dreamember.onrender.com/>"
 
-        msg = (
+        msg_main = (
             "Привет! Я «Дримембер» — дневник снов.\n\n"
-            "Чтобы сохранить сон, нужно один раз зарегистрироваться:\n"
+            "Перед первой записью нужно связать колонку с личным кабинетом.\n"
+            "Откройте ссылку и нажмите «Регистрация»:\n"
             f"{register_url}\n\n"
-            f"Ваш идентификатор устройства: {user_id}\n\n"
-            "ID связывает колонку с личным кабинетом, а на сайте вы сможете "
-            "читать и удалять свои сны.\n\n"
-            "После регистрации скажите «Запиши сон» и расскажите его.\n\n"
-            "Чтобы удобно скопировать id, нажмите на всплывшее снизу сообщение,\n\n"
-            "после чего скопируйте его в буфер обмена, долгим нажатием на него\n\n"
-            "(Вылезет окошко, в котором нужно будет кликнуть \"копировать текст сообщения\" )"
+            "После регистрации вернитесь и скажите «Запиши сон»."
         )
-        # добавляем кнопку-подсказку с ID
-        return jsonify(answer(msg, data, suggestions=[user_id]))
+
+        msg_id = f"Ваш идентификатор устройства:\n{user_id}"
+
+        # формируем payload вручную: два bubble + кнопка-подсказка
+        payload = {
+            "pronounceText": msg_main,
+            "pronounceTextType": "application/text",
+            "items": [
+                {"bubble": {"text": msg_main, "markdown": True}},
+                {"bubble": {"text": msg_id, "markdown": True}},
+            ],
+            "suggestions": {
+                "buttons": [
+                    {"title": user_id, "action": {"text": user_id}}
+                ]
+            },
+            "auto_listening": False,
+        }
+
+        return jsonify({
+            "messageName": "ANSWER_TO_USER",
+            "sessionId": data["sessionId"],
+            "messageId": data["messageId"],
+            "uuid": data["uuid"],
+            "payload": payload,
+        })
 
     # ---------- пришёл текст сна -----------------------------------
     if state["awaiting"]:
