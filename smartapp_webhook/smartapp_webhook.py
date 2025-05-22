@@ -86,20 +86,20 @@ def handle_smartapp():
         if state["registered"]:
             return jsonify(answer("Готов записать сон. Начинайте рассказывать.", data))
 
-        # ссылка на корень сайта с auto-ID
-        # ---- если пользователь не зарегистрирован ------------------------
+        # ссылка на корень сайта
         register_url = "https://dreamember.onrender.com/"
 
         msg = (
             "Привет! Я «Дримембер» — дневник снов.\n\n"
             "Чтобы сохранить сон, нужно один раз зарегистрироваться:\n"
-            f"<{register_url}>\n\n"  # ссылка полностью кликабельна
+            f"{register_url}\n\n"
             f"Ваш идентификатор устройства: {user_id}\n\n"
-            "ID позволяет связать колонку с личным кабинетом, "
-            "а на сайте вы сможете читать, редактировать и удалять свои сны.\n\n"
-            "Когда регистрация будет завершена, скажите «Запиши сон» и расскажите его."
+            "ID связывает колонку с личным кабинетом, а на сайте вы сможете "
+            "читать, редактировать и удалять свои сны.\n\n"
+            "После регистрации скажите «Запиши сон» и расскажите его."
         )
-        return jsonify(answer(msg, data))
+        # добавляем кнопку-подсказку с ID
+        return jsonify(answer(msg, data, suggestions=[user_id]))
 
     # ---------- пришёл текст сна -----------------------------------
     if state["awaiting"]:
@@ -152,19 +152,34 @@ def handle_smartapp():
 
 
 # ----------------- утилиты ----------------------------------------
-def answer(text: str, data: dict, end_session: bool = False) -> dict:
+def answer(
+    text: str,
+    data: dict,
+    suggestions: list[str] | None = None,
+    end_session: bool = False,
+) -> dict:
+    """
+    Формируем ANSWER_TO_USER. Можно передать список подсказок-кнопок.
+    Каждая строка suggestions станет кнопкой; при нажатии текст вставится в поле ввода.
+    """
+    payload = {
+        "pronounceText": text,
+        "pronounceTextType": "application/text",
+        "items": [{"bubble": {"text": text, "markdown": True}}],
+        "auto_listening": False,
+        "finished": end_session,
+    }
+    if suggestions:
+        payload["suggestions"] = {
+            "buttons": [{"title": s, "action": {"text": s}} for s in suggestions]
+        }
+
     return {
         "messageName": "ANSWER_TO_USER",
         "sessionId": data["sessionId"],
         "messageId": data["messageId"],
         "uuid": data["uuid"],
-        "payload": {
-            "pronounceText": text,
-            "pronounceTextType": "application/text",
-            "items": [{"bubble": {"text": text, "markdown": True}}],
-            "auto_listening": False,
-            "finished": end_session,
-        },
+        "payload": payload,
     }
 
 
