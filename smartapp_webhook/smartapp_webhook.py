@@ -10,6 +10,7 @@ from psycopg2 import sql
 import requests
 from flask import Flask, jsonify, request, Response
 
+
 app = Flask(__name__)
 
 # ---------- подключение к Postgres через psycopg2 ----------------
@@ -37,7 +38,7 @@ def check_device_registered(device_id: str) -> bool:
             query = sql.SQL(
                 "SELECT 1 FROM {table} WHERE {col} = %s LIMIT 1"
             ).format(
-                table=sql.Identifier("Users"),
+                table=sql.Identifier("users"),
                 col=sql.Identifier("deviceID")
             )
             cur.execute(query, (device_id,))
@@ -136,6 +137,7 @@ def handle_smartapp():
                     state["awaiting_login"] = True
                     return jsonify(answer("Логин занят. Назовите другой логин.", data))
                 if "deviceid" in err or "колонки" in err or "привяз" in err:
+                    # сразу переходим к записи сна
                     state["awaiting"] = True
                     return jsonify(answer("Ваша колонка уже привязана. Расскажите сон.", data))
                 state["awaiting_login"] = True
@@ -215,4 +217,4 @@ def default_error(data: dict) -> dict:
     )
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
