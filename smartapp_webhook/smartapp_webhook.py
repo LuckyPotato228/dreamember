@@ -38,21 +38,20 @@ def handle_smartapp():
     user_id = data.get("uuid", {}).get("userId")
     text = pl.get("message", {}).get("original_text", "").strip().lower()
 
-    # если нет userId — ошибка
     if not user_id:
         return jsonify(default_error(data))
 
-    # инициализируем state для этого user_id
+    # инициализируем state (теперь с token)
     state = user_state.setdefault(user_id, {
         "welcomed": False,
-        "awaiting": False,         # ждем рассказа сна
-        "awaiting_login": False,   # ждем логин для регистрации
-        "awaiting_password": False,# ждем пароль
-        "temp_login": "",          # временный логин
-        "registered": False,       # флаг признания привязки
+        "awaiting": False,
+        "awaiting_login": False,
+        "awaiting_password": False,
+        "temp_login": "",
+        "token": None,        # здесь хранится JWT после регистрации
     })
 
-    # первое приветствие
+    # — первое приветствие —
     if pl.get("intent") == "run_app" and not state["welcomed"]:
         state["welcomed"] = True
         return jsonify(answer(
@@ -61,7 +60,7 @@ def handle_smartapp():
             data
         ))
 
-    # команда «помощь»
+    # — команда «помощь» —
     if text in help_phrases:
         return jsonify(answer(
             "Я «Дримембер» — ваш дневник снов.\n"
@@ -71,14 +70,14 @@ def handle_smartapp():
             data
         ))
 
-    # ввод логина (flow регистрации)
+    # — ввод логина для регистрации —
     if state["awaiting_login"]:
         state["temp_login"] = text
         state["awaiting_login"] = False
         state["awaiting_password"] = True
         return jsonify(answer("Отлично! Теперь придумайте и скажите пароль.", data))
 
-    # ввод пароля и регистрация
+    # — ввод пароля и регистрация на сервере —
     if state["awaiting_password"]:
         login, password = state["temp_login"], text
         state["awaiting_password"] = False
@@ -88,10 +87,14 @@ def handle_smartapp():
                 json={"login": login, "password": password, "deviceID": user_id},
                 timeout=5
             )
-            print(f"[register] POST → {resp.status_code}")
+            print(f"[register] POST /user/registration → {resp.status_code}")
             if resp.ok:
-                state["registered"] = True
-                return jsonify(answer("Регистрация успешна! Скажите «Запиши сон».", data))
+                body = resp.json()
+                # сохраняем токен из ответа
+                state["token"] = body.get("token")
+                # после регистрации сразу в режим записи
+                state["awaiting"] = True
+                return jsonify(answer("Регистрация успешна! Расскажите ваш сон.", data))
             else:
                 state["awaiting_login"] = True
                 return jsonify(answer("Логин занят. Назовите другой логин.", data))
@@ -100,7 +103,42 @@ def handle_smartapp():
             state["awaiting_login"] = True
             return jsonify(answer("Сервер регистрации недоступен, повторите позже.", data))
 
-    # ————— запись сна и ленивый чек регистрации —————
+    # — предварительная проверка перед «Запиши сон» —
+    if text in activation_phrases:
+        token = state.get("token")
+        if not token:
+            # без токена — точно не зарегистрированы
+            state["awaiting_login"] = True
+            return jsonify(answer(
+                "Похоже, вы ещё не зарегистрированы. Назовите логин (e-mail или любое слово).",
+                data
+            ))
+
+        # проверяем токен через защищённый GET /api/user/auth
+        try:
+            auth_resp = requests.get(
+                "https://dreamember.onrender.com/api/user/auth",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=3
+            )
+            print(f"[auth-check] GET /user/auth → {auth_resp.status_code}")
+        except requests.RequestException as e:
+            print(f"[auth-check] error: {e}")
+            auth_resp = None
+
+        if not auth_resp or auth_resp.status_code != 200:
+            # токен невалиден или нет привязки
+            state["awaiting_login"] = True
+            return jsonify(answer(
+                "Похоже, вы ещё не завершили регистрацию. Назовите логин.",
+                data
+            ))
+
+        # всё ок — включаем запись сна
+        state["awaiting"] = True
+        return jsonify(answer("Готов записать сон. Начинайте.", data))
+
+    # — запись сна и повторный lazy-check по 401/403 —
     if state["awaiting"]:
         state["awaiting"] = False
         try:
@@ -109,57 +147,29 @@ def handle_smartapp():
                 json={"text": text, "deviceID": user_id},
                 timeout=5
             )
-            # если не привязан — 401/403
+            # если вдруг deviceID не привязан — сервер вернёт 401/403 :contentReference[oaicite:1]{index=1}
             if resp.status_code in (401, 403):
                 state["awaiting"] = True
                 return jsonify(answer(
-                    "Похоже, вы ещё не завершили регистрацию. "
-                    f"Идентификатор устройства: {user_id}. "
-                    "Введите его на сайте и повторите команду.",
+                    "Колонка не привязана. Введите её ID на сайте и повторите команду.",
                     data
                 ))
-
-            # иначе успешная запись
             resp.raise_for_status()
-            state["registered"] = True
             return jsonify(answer(
-                "Сон записан! Хорошего вам дня 🤍\n"
-                "Посмотреть свои сны можно на сайте: https://dreamember.onrender.com/",
+                "Сон записан! Просмотреть можно на https://dreamember.onrender.com/",
                 data
             ))
         except Exception:
             state["awaiting"] = True
-            print("❌ Ошибка при отправке сна:", traceback.format_exc())
+            print("❌ Ошибка при отправке:", traceback.format_exc())
             return jsonify(answer(
-                "Сервер временно недоступен. Повторите попытку через минуту.",
+                "Сервер временно недоступен. Повторите через минуту.",
                 data
             ))
 
-    # ————— предварительная проверка при «Запиши сон» —————
-    if text in activation_phrases and not state["awaiting_login"] and not state["awaiting_password"]:
-        try:
-            # делаем fresh GET к рабочему endpoint'у
-            exists = requests.get(
-                f"https://dreamember.onrender.com/api/device/{user_id}/exists",
-                timeout=3
-            ).status_code == 200
-        except requests.RequestException:
-            exists = False
-
-        state["registered"] = exists
-        if not exists:
-            state["awaiting_login"] = True
-            return jsonify(answer(
-                "Похоже, вы ещё не зарегистрированы. Назовите логин (e-mail или любое слово).",
-                data
-            ))
-
-        state["awaiting"] = True
-        return jsonify(answer("Готов записать сон. Начинайте.", data))
-
-    # fallback
+    # — fallback —
     return jsonify(answer(
-        "Я не расслышал команду. Скажите «Запиши сон» или «Помощь».",
+        "Не расслышал. Скажите «Запиши сон» или «Помощь».",
         data
     ))
 
@@ -182,7 +192,7 @@ def answer(text: str, data: dict, end_session: bool = False) -> dict:
 
 def default_error(data: dict) -> dict:
     return answer(
-        "Произошла техническая ошибка. Попробуйте ещё раз позже.",
+        "Произошла техническая ошибка. Попробуйте позже.",
         data,
         end_session=True
     )
