@@ -31,9 +31,10 @@ def health() -> Response:
 def is_registered(device_id: str) -> bool:
     try:
         r = requests.get(
-            f"https://dreamember.onrender.com/api/device/{device_id}/exists", timeout=3
+            f"https://dreamember.onrender.com/api/user/exists/{device_id}",
+            timeout=3,
         )
-        return r.status_code == 200
+        return r.ok
     except requests.RequestException:
         return False
 
