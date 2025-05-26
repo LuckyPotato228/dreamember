@@ -138,7 +138,7 @@ def handle_smartapp():
                 timeout=5)
             print("Dream save response:", resp.status_code, resp.text)
             resp.raise_for_status()
-            return jsonify(answer("Сон записан! Хороших снов 🤍", data))
+            return jsonify(answer("Сон записан! Хорошего вам дня 🤍\n Просмотреть свой сон можете на сайте: <https://dreamember.onrender.com/>", data))
         except Exception:
             print("Dream save error:", traceback.format_exc())
             state["awaiting"] = True
