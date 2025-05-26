@@ -41,7 +41,6 @@ def is_registered(device_id: str) -> bool:
     state = user_state.get(device_id, {})
     token = state.get("token")
     if not token:
-        # токена нет — явно не регистрировали
         return False
 
     try:
@@ -65,7 +64,7 @@ def handle_smartapp():
     text = pl.get("message", {}).get("original_text", "").strip().lower()
 
     # если нет userId или пустой текст — возвращаем ошибку
-    if not user_id or not text:
+    if not user_id or text is None:
         return jsonify(default_error(data))
 
     # инициализируем состояние для этого user_id
@@ -79,15 +78,14 @@ def handle_smartapp():
         "registered": False,  # флаг регистрации
     })
 
+    # перехват «пустого» тела эмулятора, чтобы снова показать приветствие
     if text == "":
-        state["welcomed"] = False
         state["welcomed"] = True
         return jsonify(answer(
             "Привет! Я «Дримембер» — ваш личный дневник снов.\n"
             "Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
             data
         ))
-
 
     # первое приветствие
     if pl.get("intent") == "run_app" and not state["welcomed"]:
@@ -160,7 +158,7 @@ def handle_smartapp():
         state["awaiting"] = True
         return jsonify(answer("Готов записать сон. Начинайте.", data))
 
-    # сохраняем текст сна
+    # —— здесь основная вставка по отправке сна и ленивой проверке регистрации ——
     if state["awaiting"]:
         state["awaiting"] = False
         try:
@@ -169,20 +167,37 @@ def handle_smartapp():
                 json={"text": text, "deviceID": user_id},
                 timeout=5
             )
-            print(f"[dream] POST /api/dream → {resp.status_code}")
+            # если устройство не привязано — сервер вернёт 401 или 403
+            if resp.status_code in (401, 403):
+                state["awaiting"] = True
+                return jsonify(answer(
+                    "Похоже, вы ещё не завершили регистрацию. "
+                    f"Идентификатор устройства: {user_id}. "
+                    "Введите его на сайте и повторите команду.",
+                    data
+                ))
+
             resp.raise_for_status()
+            # удачно записали — считаем, что deviceID привязан
+            state["registered"] = True
             return jsonify(answer(
                 "Сон записан! Хорошего вам дня 🤍\n"
-                "Просмотреть свои сны можно на сайте: <https://dreamember.onrender.com/>    ",
+                "Просмотреть свои сны можно на сайте: <https://dreamember.onrender.com/>",
                 data
             ))
-        except Exception as e:
-            print(f"[dream] error: {e}\n{traceback.format_exc()}")
+        except Exception:
             state["awaiting"] = True
-            return jsonify(answer("Не смог сохранить сон. Повторите позже.", data))
+            print("❌ Ошибка при отправке сна:", traceback.format_exc())
+            return jsonify(answer(
+                "Сервер временно недоступен. Повторите попытку через минуту.",
+                data
+            ))
 
-    # fallback
-    return jsonify(answer("Не расслышал. Скажите «Запиши сон» или «Помощь».", data))
+    # ---------- fallback -------------------------------------------
+    return jsonify(answer(
+        "Я не расслышал команду. Скажите «Запиши мой сон» или «Помощь», чтобы узнать подробности.",
+        data
+    ))
 
 
 # ----------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ------------------------
@@ -202,7 +217,11 @@ def answer(text: str, data: dict, end_session: bool = False) -> dict:
     }
 
 def default_error(data: dict) -> dict:
-    return answer("Ошибка в запросе. Повторите ещё раз.", data, end_session=True)
+    return answer(
+        "Произошла техническая ошибка. Попробуйте ещё раз позже.",
+        data,
+        end_session=True
+    )
 
 
 if __name__ == "__main__":
