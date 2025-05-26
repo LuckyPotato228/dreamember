@@ -135,8 +135,25 @@ def handle_smartapp():
                 data
             ))
 
-    # **Новый:** всегда по «Запиши сон» сразу в режим записи
-    if text in activation_phrases:
+    # ————— предварительная проверка при «Запиши сон» —————
+    if text in activation_phrases and not state["awaiting_login"] and not state["awaiting_password"]:
+        try:
+            # делаем fresh GET к рабочему endpoint'у
+            exists = requests.get(
+                f"https://dreamember.onrender.com/api/device/{user_id}/exists",
+                timeout=3
+            ).status_code == 200
+        except requests.RequestException:
+            exists = False
+
+        state["registered"] = exists
+        if not exists:
+            state["awaiting_login"] = True
+            return jsonify(answer(
+                "Похоже, вы ещё не зарегистрированы. Назовите логин (e-mail или любое слово).",
+                data
+            ))
+
         state["awaiting"] = True
         return jsonify(answer("Готов записать сон. Начинайте.", data))
 
