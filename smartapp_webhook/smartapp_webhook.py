@@ -63,10 +63,19 @@ def handle_smartapp():
             .strip()
             .lower()
     )
+
+    # 1️⃣ сразу на старте сессии прокидываем приветствие
+    if data.get("new_session", False):
+        return jsonify(answer(
+            "Привет! Я «Дримембер» — ваш личный дневник снов.\n"
+            "Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
+            data
+        ))
+
+    # 2️⃣ дальше — старая логика
     if not user_id or not text:
         return jsonify(default_error(data))
 
-    # инициализация состояния
     state = user_state.setdefault(user_id, {
         "awaiting": False,
         "registered": False,
@@ -74,9 +83,9 @@ def handle_smartapp():
         "awaiting_password": False,
         "temp_login": ""
     })
-    # один раз проверяем на бэке
     if not state["registered"]:
         state["registered"] = is_registered(user_id)
+
 
     # ----- команда «помощь» ----------------------------------------
     if text in help_phrases:
