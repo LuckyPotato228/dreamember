@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import traceback
 from typing import Final
@@ -10,12 +11,6 @@ from flask import Flask, jsonify, request, Response
 app = Flask(__name__)
 
 # ---------- состояние пользователя --------------------------------
-# для каждого userId храним:
-#   awaiting: ждём ли текст сна
-#   registered: прошёл ли userController.check
-#   awaiting_login: ждём ли логин
-#   awaiting_password: ждём ли пароль
-#   temp_login: временно храним введённый логин
 user_state: dict[str, dict[str, bool | str]] = {}
 
 # --- фразы --------------------------------------------------------
@@ -31,19 +26,12 @@ activation_phrases: Final = {
 }
 help_phrases: Final = {"помощь", "help", "что ты умеешь", "как пользоваться"}
 
-# ------------------------------------------------------------------
-@app.route("/webhook", methods=["POST"])
-def handle_smartapp():
-    data = request.json
-    print("=== Incoming webhook ===")
-    print(json.dumps(data, ensure_ascii=False, indent=2))
-    print("========================")
+@app.route("/health", methods=["GET", "HEAD"])
 def health() -> Response:
     payload = {"status": "ok"}
     if request.method == "GET" and request.args.get("verbose") == "1":
         payload |= {"ts": int(time.time()), "users_in_mem": len(user_state)}
     return jsonify(payload)
-
 
 def is_registered(device_id: str) -> bool:
     try:
@@ -55,11 +43,16 @@ def is_registered(device_id: str) -> bool:
     except requests.RequestException:
         return False
 
-
 # ----------------------------- WEBHOOK ----------------------------
 @app.route("/webhook", methods=["POST"])
 def handle_smartapp():
     data = request.json
+
+    # --- выводим весь входящий JSON для отладки
+    print("=== Incoming webhook ===")
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+    print("========================")
+
     user_id = data.get("uuid", {}).get("userId")
     text = (
         data.get("payload", {})
@@ -69,7 +62,7 @@ def handle_smartapp():
             .lower()
     )
 
-    # 1️⃣ сразу на старте сессии прокидываем приветствие
+    # 1️⃣ приветствие в начале новой сессии
     if data.get("new_session", False):
         return jsonify(answer(
             "Привет! Я «Дримембер» — ваш личный дневник снов.\n"
@@ -77,7 +70,7 @@ def handle_smartapp():
             data
         ))
 
-    # 2️⃣ дальше — старая логика
+    # 2️⃣ основная логика дальше
     if not user_id or not text:
         return jsonify(default_error(data))
 
@@ -91,8 +84,7 @@ def handle_smartapp():
     if not state["registered"]:
         state["registered"] = is_registered(user_id)
 
-
-    # ----- команда «помощь» ----------------------------------------
+    # помощь
     if text in help_phrases:
         return jsonify(answer(
             "Я «Дримембер» — ваш дневник снов.\n"
@@ -103,7 +95,7 @@ def handle_smartapp():
             data
         ))
 
-    # ----- регистрация голосом: логин --------------------------------
+    # регистрация голосом: логин
     if not state["registered"] and not state["awaiting_login"] and not state["awaiting_password"]:
         if text in activation_phrases:
             state["awaiting_login"] = True
@@ -112,7 +104,7 @@ def handle_smartapp():
                 data
             ))
 
-    # если ждём логин
+    # ввод логина
     if state["awaiting_login"]:
         state["temp_login"] = text
         state["awaiting_login"] = False
@@ -122,7 +114,7 @@ def handle_smartapp():
             data
         ))
 
-    # если ждём пароль
+    # ввод пароля и регистрация через бэк
     if state["awaiting_password"]:
         login = state["temp_login"]
         password = text
@@ -134,7 +126,7 @@ def handle_smartapp():
                 json={"login": login, "password": password, "deviceID": user_id},
                 timeout=5,
             )
-            # теперь учитываем любой успешный 2xx статус
+            print(f"Registration response: {resp.status_code} {resp.text}")
             if resp.ok:
                 state["registered"] = True
                 return jsonify(answer(
@@ -149,21 +141,22 @@ def handle_smartapp():
                     "Придумайте другой логин и скажите его.",
                     data
                 ))
-        except Exception:
+        except Exception as e:
+            print("Registration error:", traceback.format_exc())
             state["awaiting_login"] = True
             return jsonify(answer(
                 "Сервер регистрации недоступен. Попробуйте назвать логин чуть позже.",
                 data
             ))
 
-    # ----- активация записи сна -------------------------------------
+    # активация записи сна
     if text in activation_phrases:
         if state["awaiting"]:
             return jsonify(answer("Я слушаю. Расскажите ваш сон.", data))
         state["awaiting"] = True
         return jsonify(answer("Готов записать сон. Начинайте рассказывать.", data))
 
-    # ----- пришёл текст сна -----------------------------------------
+    # сохранение сна
     if state["awaiting"]:
         state["awaiting"] = False
         payload = {"text": text, "deviceID": user_id}
@@ -173,6 +166,7 @@ def handle_smartapp():
                 json=payload,
                 timeout=5,
             )
+            print(f"Dream save response: {resp.status_code} {resp.text}")
             resp.raise_for_status()
             return jsonify(answer(
                 "Сон записан! Хороших снов 🤍",
@@ -180,19 +174,18 @@ def handle_smartapp():
             ))
         except Exception:
             state["awaiting"] = True
+            print("Dream save error:", traceback.format_exc())
             return jsonify(answer(
                 "Не смог сохранить сон. Попробуйте ещё раз через минуту.",
                 data
             ))
 
-    # ----- fallback -----------------------------------------------
+    # fallback
     return jsonify(answer(
         "Не расслышал. Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
         data
     ))
 
-
-# ----------------- вспомогательные функции ------------------------
 def answer(text: str, data: dict, end_session: bool = False) -> dict:
     return {
         "messageName": "ANSWER_TO_USER",
@@ -208,10 +201,8 @@ def answer(text: str, data: dict, end_session: bool = False) -> dict:
         },
     }
 
-
 def default_error(data: dict) -> dict:
     return answer("Ошибка в запросе. Повтори ещё раз.", data, end_session=True)
-
 
 if __name__ == "__main__":
     import os
