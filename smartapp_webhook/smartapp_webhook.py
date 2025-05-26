@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import json           # <— добавили
 import time
 import traceback
 from typing import Final
@@ -15,14 +15,9 @@ user_state: dict[str, dict[str, bool | str]] = {}
 
 # --- фразы --------------------------------------------------------
 activation_phrases: Final = {
-    "записать сон",
-    "запиши сон",
-    "запиши мой сон",
-    "запись сна",
-    "запись снов",
-    "дневник снов",
-    "запусти dreamember",
-    "включи запись сна",
+    "записать сон", "запиши сон", "запиши мой сон",
+    "запись сна", "запись снов", "дневник снов",
+    "запусти dreamember", "включи запись сна",
 }
 help_phrases: Final = {"помощь", "help", "что ты умеешь", "как пользоваться"}
 
@@ -43,16 +38,25 @@ def is_registered(device_id: str) -> bool:
     except requests.RequestException:
         return False
 
-# ----------------------------- WEBHOOK ----------------------------
+# ---- единый обработчик webhook -----------------------------------
 @app.route("/webhook", methods=["POST"])
 def handle_smartapp():
     data = request.json
 
-    # --- выводим весь входящий JSON для отладки
+    # 🤖 логируем полный запрос
     print("=== Incoming webhook ===")
     print(json.dumps(data, ensure_ascii=False, indent=2))
     print("========================")
 
+    # 1️⃣ Приветствие на старте новой сессии
+    if data.get("new_session", False):
+        return jsonify(answer(
+            "Привет! Я «Дримембер» — ваш личный дневник снов.\n"
+            "Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
+            data
+        ))
+
+    # 2️⃣ Основная логика
     user_id = data.get("uuid", {}).get("userId")
     text = (
         data.get("payload", {})
@@ -61,16 +65,6 @@ def handle_smartapp():
             .strip()
             .lower()
     )
-
-    # 1️⃣ приветствие в начале новой сессии
-    if data.get("new_session", False):
-        return jsonify(answer(
-            "Привет! Я «Дримембер» — ваш личный дневник снов.\n"
-            "Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
-            data
-        ))
-
-    # 2️⃣ основная логика дальше
     if not user_id or not text:
         return jsonify(default_error(data))
 
@@ -84,7 +78,7 @@ def handle_smartapp():
     if not state["registered"]:
         state["registered"] = is_registered(user_id)
 
-    # помощь
+    # — помощь —
     if text in help_phrases:
         return jsonify(answer(
             "Я «Дримембер» — ваш дневник снов.\n"
@@ -95,7 +89,7 @@ def handle_smartapp():
             data
         ))
 
-    # регистрация голосом: логин
+    # — регистрация голосом (логин/пароль) —
     if not state["registered"] and not state["awaiting_login"] and not state["awaiting_password"]:
         if text in activation_phrases:
             state["awaiting_login"] = True
@@ -103,8 +97,6 @@ def handle_smartapp():
                 "Чтобы начать, придумайте и назовите, пожалуйста, логин (e-mail или любое слово).",
                 data
             ))
-
-    # ввод логина
     if state["awaiting_login"]:
         state["temp_login"] = text
         state["awaiting_login"] = False
@@ -113,20 +105,17 @@ def handle_smartapp():
             "Отлично! Теперь придумайте и скажите пароль для входа.",
             data
         ))
-
-    # ввод пароля и регистрация через бэк
     if state["awaiting_password"]:
         login = state["temp_login"]
         password = text
         state["awaiting_password"] = False
-
         try:
             resp = requests.post(
                 "https://dreamember.onrender.com/api/registration",
                 json={"login": login, "password": password, "deviceID": user_id},
                 timeout=5,
             )
-            print(f"Registration response: {resp.status_code} {resp.text}")
+            print("Registration response:", resp.status_code, resp.text)
             if resp.ok:
                 state["registered"] = True
                 return jsonify(answer(
@@ -141,7 +130,7 @@ def handle_smartapp():
                     "Придумайте другой логин и скажите его.",
                     data
                 ))
-        except Exception as e:
+        except Exception:
             print("Registration error:", traceback.format_exc())
             state["awaiting_login"] = True
             return jsonify(answer(
@@ -149,14 +138,14 @@ def handle_smartapp():
                 data
             ))
 
-    # активация записи сна
+    # — активация записи сна —
     if text in activation_phrases:
         if state["awaiting"]:
             return jsonify(answer("Я слушаю. Расскажите ваш сон.", data))
         state["awaiting"] = True
         return jsonify(answer("Готов записать сон. Начинайте рассказывать.", data))
 
-    # сохранение сна
+    # — сохранение текста сна —
     if state["awaiting"]:
         state["awaiting"] = False
         payload = {"text": text, "deviceID": user_id}
@@ -166,21 +155,15 @@ def handle_smartapp():
                 json=payload,
                 timeout=5,
             )
-            print(f"Dream save response: {resp.status_code} {resp.text}")
+            print("Dream save response:", resp.status_code, resp.text)
             resp.raise_for_status()
-            return jsonify(answer(
-                "Сон записан! Хороших снов 🤍",
-                data
-            ))
+            return jsonify(answer("Сон записан! Хороших снов 🤍", data))
         except Exception:
-            state["awaiting"] = True
             print("Dream save error:", traceback.format_exc())
-            return jsonify(answer(
-                "Не смог сохранить сон. Попробуйте ещё раз через минуту.",
-                data
-            ))
+            state["awaiting"] = True
+            return jsonify(answer("Не смог сохранить сон. Попробуйте ещё раз через минуту.", data))
 
-    # fallback
+    # — fallback —
     return jsonify(answer(
         "Не расслышал. Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
         data
