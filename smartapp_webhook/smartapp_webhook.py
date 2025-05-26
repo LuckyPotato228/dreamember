@@ -32,7 +32,12 @@ activation_phrases: Final = {
 help_phrases: Final = {"помощь", "help", "что ты умеешь", "как пользоваться"}
 
 # ------------------------------------------------------------------
-@app.route("/health", methods=["GET", "HEAD"])
+@app.route("/webhook", methods=["POST"])
+def handle_smartapp():
+    data = request.json
+    print("=== Incoming webhook ===")
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+    print("========================")
 def health() -> Response:
     payload = {"status": "ok"}
     if request.method == "GET" and request.args.get("verbose") == "1":
