@@ -79,6 +79,16 @@ def handle_smartapp():
         "registered": False,  # флаг регистрации
     })
 
+    if text == "":
+        state["welcomed"] = False
+        state["welcomed"] = True
+        return jsonify(answer(
+            "Привет! Я «Дримембер» — ваш личный дневник снов.\n"
+            "Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
+            data
+        ))
+
+
     # первое приветствие
     if pl.get("intent") == "run_app" and not state["welcomed"]:
         state["welcomed"] = True
@@ -163,7 +173,7 @@ def handle_smartapp():
             resp.raise_for_status()
             return jsonify(answer(
                 "Сон записан! Хорошего вам дня 🤍\n"
-                "Просмотреть свои сны можно на сайте: https://dreamember.onrender.com/",
+                "Просмотреть свои сны можно на сайте: <https://dreamember.onrender.com/>    ",
                 data
             ))
         except Exception as e:
