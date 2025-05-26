@@ -51,6 +51,15 @@ def handle_smartapp():
         "token": None,        # здесь хранится JWT после регистрации
     })
 
+    if text in help_phrases:
+        return jsonify(answer(
+            "Я «Дримембер» — ваш дневник снов.\n"
+            "1) Скажите «Запиши сон».\n"
+            "2) Расскажите сон до 90 секунд.\n"
+            "3) Позже посмотрите запись на сайте.",
+            data
+        ))
+
     # — первое приветствие —
     if pl.get("intent") == "run_app" and not state["welcomed"]:
         state["welcomed"] = True
@@ -61,13 +70,15 @@ def handle_smartapp():
         ))
 
     # — команда «помощь» —
-    if text in help_phrases:
+
+
+    if text == "":
+        state["welcomed"] = False
+        state["welcomed"] = True
         return jsonify(answer(
-            "Я «Дримембер» — ваш дневник снов.\n"
-            "1) Скажите «Запиши сон».\n"
-            "2) Расскажите сон до 90 секунд.\n"
-            "3) Позже посмотрите запись на сайте.",
-            data
+                    "Привет! Я «Дримембер» — ваш личный дневник снов.\n"
+         "Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
+                    data
         ))
 
     # — ввод логина для регистрации —
