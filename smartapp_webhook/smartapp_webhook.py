@@ -47,8 +47,9 @@ def handle_smartapp():
     print(json.dumps(data, ensure_ascii=False, indent=2))
     print("========================")
 
+    pl = data.get("payload", {})
     # ─── приветствие на старте новой сессии ───────────
-    if data.get("new_session", False):
+    if pl.get("new_session", False):
         return jsonify(answer(
             "Привет! Я «Дримембер» — ваш личный дневник снов.\n"
             "Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
@@ -58,11 +59,11 @@ def handle_smartapp():
     # ─── вытаскиваем userId и текст ────────────────────
     user_id = data.get("uuid", {}).get("userId")
     text = (
-        data.get("payload", {})
-            .get("message", {})
-            .get("original_text", "")
-            .strip()
-            .lower()
+        pl
+        .get("message", {})
+        .get("original_text", "")
+        .strip()
+        .lower()
     )
     if not user_id or not text:
         return jsonify(default_error(data))
