@@ -10,9 +10,15 @@ from flask import Flask, jsonify, request, Response
 app = Flask(__name__)
 
 # ---------- состояние пользователя --------------------------------
-user_state: dict[str, dict[str, bool]] = {}
+# для каждого userId храним:
+#   awaiting: ждём ли текст сна
+#   registered: прошёл ли userController.check
+#   awaiting_login: ждём ли логин
+#   awaiting_password: ждём ли пароль
+#   temp_login: временно храним введённый логин
+user_state: dict[str, dict[str, bool | str]] = {}
 
-# --- АКТИВАЦИОННЫЕ ФРАЗЫ (как в Studio) ---------------------------
+# --- фразы --------------------------------------------------------
 activation_phrases: Final = {
     "записать сон",
     "запиши сон",
@@ -46,8 +52,6 @@ def is_registered(device_id: str) -> bool:
 @app.route("/webhook", methods=["POST"])
 def handle_smartapp():
     data = request.json
-    print("🌐 Входящий JSON:", data)
-
     user_id = data.get("uuid", {}).get("userId")
     text = (
         data.get("payload", {})
@@ -56,155 +60,149 @@ def handle_smartapp():
         .strip()
         .lower()
     )
-
     if not user_id or not text:
         return jsonify(default_error(data))
 
-    state = user_state.setdefault(user_id, {"awaiting": False, "registered": False})
+    # инициализация состояния
+    state = user_state.setdefault(user_id, {
+        "awaiting": False,
+        "registered": False,
+        "awaiting_login": False,
+        "awaiting_password": False,
+        "temp_login": ""
+    })
+    # один раз проверяем на бэке
     if not state["registered"]:
         state["registered"] = is_registered(user_id)
 
-    # ---------- help ------------------------------------------------
+    # ----- команда «помощь» ----------------------------------------
     if text in help_phrases:
-        return jsonify(
-            answer(
-                "Я «Дримембер» — дневник ваших снов. Чтобы сохранить сон:\n"
-                "1) Скажите «Запиши сон» или «Дневник снов».\n"
-                "2) Расскажите сон до 90 секунд.\n"
-                "3) Посмотрите запись на dreamember.onrender.com.",
-                data,
-            )
-        )
+        return jsonify(answer(
+            "Я «Дримембер» — ваш дневник снов.\n"
+            "Чтобы начать:\n"
+            "1) Скажите «Запиши сон».\n"
+            "2) Расскажите сон до 90 секунд.\n"
+            "3) Сохранённые записи можно будет увидеть на сайте.",
+            data
+        ))
 
-    # ---------- активация ------------------------------------------
+    # ----- регистрация голосом: логин --------------------------------
+    # если не зарегистрирован и ещё не начали регистрацию
+    if not state["registered"] and not state["awaiting_login"] and not state["awaiting_password"]:
+        # активация означает старт регистрации
+        if text in activation_phrases:
+            state["awaiting_login"] = True
+            return jsonify(answer(
+                "Чтобы начать, придумайте и назовите, пожалуйста, логин (будь то e-mail или любое слово).",
+                data
+            ))
+
+    # если ждём логин
+    if state["awaiting_login"]:
+        # сохраняем введённый логин и запрашиваем пароль
+        state["temp_login"] = text
+        state["awaiting_login"] = False
+        state["awaiting_password"] = True
+        return jsonify(answer(
+            "Отлично! Теперь придумайте и скажите пароль для входа.",
+            data
+        ))
+
+    # если ждём пароль
+    if state["awaiting_password"]:
+        login = state["temp_login"]
+        password = text
+        # сбросим флаги до запроса
+        state["awaiting_password"] = False
+
+        # вызываем ваш userController.registration
+        try:
+            resp = requests.post(
+                "https://dreamember.onrender.com/api/registration",
+                json={"login": login, "password": password, "deviceID": user_id},
+                timeout=5,
+            )
+            if resp.status_code == 201:
+                state["registered"] = True
+                return jsonify(answer(
+                    "Регистрация прошла успешно! Теперь скажите «Запиши сон», "
+                    "чтобы я сохранил вашу первую запись.",
+                    data
+                ))
+            else:
+                # ошибка регистрации
+                state["awaiting_login"] = True
+                return jsonify(answer(
+                    "Что-то пошло не так при регистрации. Возможно, логин занят. "
+                    "Придумайте другой логин и скажите его.",
+                    data
+                ))
+        except Exception:
+            state["awaiting_login"] = True
+            return jsonify(answer(
+                "Сервер регистрации недоступен. Попробуйте назвать логин чуть позже.",
+                data
+            ))
+
+    # ----- активация записи сна -------------------------------------
     if text in activation_phrases:
+        # если уже ждём текст сна
         if state["awaiting"]:
             return jsonify(answer("Я слушаю. Расскажите ваш сон.", data))
 
         state["awaiting"] = True
+        return jsonify(answer("Готов записать сон. Начинайте рассказывать.", data))
 
-        if state["registered"]:
-            return jsonify(answer("Готов записать сон. Начинайте рассказывать.", data))
-
-        # ссылка на корень сайта
-        register_url = "<https://dreamember.onrender.com/>"
-
-        msg_main = (
-            "Привет! Я «Дримембер» — дневник снов 📓\n\n"
-            "Чтобы начать сохранять сны, нужно один раз зарегистрироваться на сайте:\n"
-            f"{register_url}\n\n"
-            "Это нужно для того, чтобы привязать ваше устройство к личному кабинету, где вы сможете читать, редактировать и удалять свои записи.\n\n"
-            "После перехода на сайт нажмите «Регистрация» и введите код устройства, который я пришлю следующим сообщением.\n\n"
-            "Чтобы удобно скопировать код:\n"
-            "1. Нажмите на сообщение с ID, которое появится ниже;\n"
-            "2. Удерживайте палец на тексте и выберите «Скопировать текст сообщения».\n\n"
-            "После регистрации вернитесь сюда и скажите: «Запиши сон» 💤"
-        )
-
-        # ответ: два bubble, второй — только ID
-        payload = {
-            "pronounceText": msg_main,
-            "pronounceTextType": "application/text",
-            "items": [
-                {"bubble": {"text": msg_main, "markdown": True}},
-                {"bubble": {"text": user_id, "markdown": False}},  # только ID
-            ],
-            "auto_listening": False,
-        }
-
-        return jsonify({
-            "messageName": "ANSWER_TO_USER",
-            "sessionId": data["sessionId"],
-            "messageId": data["messageId"],
-            "uuid": data["uuid"],
-            "payload": payload,
-        })
-
-    # ---------- пришёл текст сна -----------------------------------
+    # ----- пришёл текст сна -----------------------------------------
     if state["awaiting"]:
         state["awaiting"] = False
         payload = {"text": text, "deviceID": user_id}
-
         try:
             resp = requests.post(
-                "https://dreamember.onrender.com/api/dream", json=payload, timeout=5
+                "https://dreamember.onrender.com/api/dream",
+                json=payload,
+                timeout=5,
             )
-
-            if resp.status_code in (401, 403):
-                state["awaiting"] = True
-                return jsonify(
-                    answer(
-                        "Похоже, вы ещё не завершили регистрацию. "
-                        f"Идентификатор устройства: {user_id}. "
-                        "Перейдите по ссылке из сообщения и попробуйте снова.",
-                        data,
-                    )
-                )
-
             resp.raise_for_status()
-            state["registered"] = True
-            return jsonify(
-                answer(
-                    "Сон записан!\n\n"
-                    "Посмотреть его можно на сайте: <https://dreamember.onrender.com/>",
-                    data,
-                )
-            )
-
+            return jsonify(answer(
+                "Сон записан! Хороших снов 🤍",
+                data
+            ))
         except Exception:
             state["awaiting"] = True
-            print("❌ Ошибка при отправке сна:", traceback.format_exc())
-            return jsonify(
-                answer(
-                    "Сервер сейчас недоступен. Повторите попытку через минуту.",
-                    data,
-                )
-            )
+            return jsonify(answer(
+                "Не смог сохранить сон. Попробуйте ещё раз через минуту.",
+                data
+            ))
 
-    # ---------- fallback -------------------------------------------
-    return jsonify(
-        answer(
-            "Не расслышал. Скажите «Дневник снов» или «Помощь», чтобы узнать команды.",
-            data,
-        )
-    )
+    # ----- fallback -----------------------------------------------
+    return jsonify(answer(
+        "Не расслышал. Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
+        data
+    ))
 
 
-# ----------------- утилиты ----------------------------------------
-def answer(
-    text: str,
-    data: dict,
-    suggestions: list[str] | None = None,
-    end_session: bool = False,
-) -> dict:
-    payload = {
-        "pronounceText": text,
-        "pronounceTextType": "application/text",
-        "items": [{"bubble": {"text": text, "markdown": True}}],
-        "auto_listening": False,
-        "finished": end_session,
-    }
-    if suggestions:
-        payload["suggestions"] = {
-            "buttons": [{"title": s, "action": {"text": s}} for s in suggestions]
-        }
-
+# ----------------- вспомогательные функции ------------------------
+def answer(text: str, data: dict, end_session: bool = False) -> dict:
     return {
         "messageName": "ANSWER_TO_USER",
         "sessionId": data["sessionId"],
         "messageId": data["messageId"],
         "uuid": data["uuid"],
-        "payload": payload,
+        "payload": {
+            "pronounceText": text,
+            "pronounceTextType": "application/text",
+            "items": [{"bubble": {"text": text, "markdown": True}}],
+            "auto_listening": False,
+            "finished": end_session,
+        },
     }
 
 
 def default_error(data: dict) -> dict:
-    return answer(
-        "Произошла техническая ошибка. Попробуйте ещё раз позже.", data, end_session=True
-    )
+    return answer("Ошибка в запросе. Повтори ещё раз.", data, end_session=True)
 
 
 if __name__ == "__main__":
     import os
-
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
