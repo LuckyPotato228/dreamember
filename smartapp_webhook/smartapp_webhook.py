@@ -22,9 +22,12 @@ user_state: dict[str, dict[str, bool | str]] = {}
 activation_phrases: Final = {
     "записать сон",
     "запиши сон",
+    "запиши мой сон",
     "запись сна",
     "запись снов",
     "дневник снов",
+    "запусти dreamember",
+    "включи запись сна",
 }
 help_phrases: Final = {"помощь", "help", "что ты умеешь", "как пользоваться"}
 
@@ -55,10 +58,10 @@ def handle_smartapp():
     user_id = data.get("uuid", {}).get("userId")
     text = (
         data.get("payload", {})
-        .get("message", {})
-        .get("original_text", "")
-        .strip()
-        .lower()
+            .get("message", {})
+            .get("original_text", "")
+            .strip()
+            .lower()
     )
     if not user_id or not text:
         return jsonify(default_error(data))
@@ -87,19 +90,16 @@ def handle_smartapp():
         ))
 
     # ----- регистрация голосом: логин --------------------------------
-    # если не зарегистрирован и ещё не начали регистрацию
     if not state["registered"] and not state["awaiting_login"] and not state["awaiting_password"]:
-        # активация означает старт регистрации
         if text in activation_phrases:
             state["awaiting_login"] = True
             return jsonify(answer(
-                "Чтобы начать, придумайте и назовите, пожалуйста, логин (будь то e-mail или любое слово).",
+                "Чтобы начать, придумайте и назовите, пожалуйста, логин (e-mail или любое слово).",
                 data
             ))
 
     # если ждём логин
     if state["awaiting_login"]:
-        # сохраняем введённый логин и запрашиваем пароль
         state["temp_login"] = text
         state["awaiting_login"] = False
         state["awaiting_password"] = True
@@ -112,17 +112,16 @@ def handle_smartapp():
     if state["awaiting_password"]:
         login = state["temp_login"]
         password = text
-        # сбросим флаги до запроса
         state["awaiting_password"] = False
 
-        # вызываем ваш userController.registration
         try:
             resp = requests.post(
                 "https://dreamember.onrender.com/api/registration",
                 json={"login": login, "password": password, "deviceID": user_id},
                 timeout=5,
             )
-            if resp.status_code == 201:
+            # теперь учитываем любой успешный 2xx статус
+            if resp.ok:
                 state["registered"] = True
                 return jsonify(answer(
                     "Регистрация прошла успешно! Теперь скажите «Запиши сон», "
@@ -130,10 +129,9 @@ def handle_smartapp():
                     data
                 ))
             else:
-                # ошибка регистрации
                 state["awaiting_login"] = True
                 return jsonify(answer(
-                    "Что-то пошло не так при регистрации. Возможно, логин занят. "
+                    "Не получилось зарегистрироваться. Возможно, логин занят. "
                     "Придумайте другой логин и скажите его.",
                     data
                 ))
@@ -146,10 +144,8 @@ def handle_smartapp():
 
     # ----- активация записи сна -------------------------------------
     if text in activation_phrases:
-        # если уже ждём текст сна
         if state["awaiting"]:
             return jsonify(answer("Я слушаю. Расскажите ваш сон.", data))
-
         state["awaiting"] = True
         return jsonify(answer("Готов записать сон. Начинайте рассказывать.", data))
 
