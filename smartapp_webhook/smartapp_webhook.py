@@ -10,6 +10,7 @@ from flask import Flask, jsonify, request, Response
 app = Flask(__name__)
 
 # ---------- состояние пользователя --------------------------------
+# теперь в state храним ещё и token
 user_state: dict[str, dict[str, bool | str | None]] = {}
 
 # ---------- фразы -------------------------------------------------
@@ -32,15 +33,25 @@ def health() -> Response:
 
 def is_registered(device_id: str) -> bool:
     """
-    Проверяем, привязано ли устройство к аккаунту.
-    Ендпоинт: GET /api/device/{deviceID}/exists → 200 если есть, иначе 404.
+    Проверяем существование аккаунта по сохранённому токену:
+    GET /api/user/auth с заголовком Authorization: Bearer <token>.
+    Если 200 — пользователь авторизован (deviceID в базе).
+    Иначе — не зарегистрирован/токен недействителен.
     """
-    url = f"https://dreamember.onrender.com/api/device/{device_id}/exists"
+    state = user_state.get(device_id, {})
+    token = state.get("token")
+    if not token:
+        # токена нет — явно не регистрировали
+        return False
+
     try:
-        r = requests.get(url, timeout=3)
-        # отладочный лог, можно убрать после проверки
-        print(f"[is_registered] GET {url} → {r.status_code}")
-        return r.status_code == 200
+        resp = requests.get(
+            "https://dreamember.onrender.com/api/user/auth",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=3
+        )
+        print(f"[is_registered] GET /api/user/auth → {resp.status_code}")
+        return resp.status_code == 200
     except requests.RequestException as e:
         print(f"[is_registered] network error: {e}")
         return False
@@ -64,7 +75,8 @@ def handle_smartapp():
         "awaiting_login": False,
         "awaiting_password": False,
         "temp_login": "",
-        "registered": None,  # None = еще не проверяли
+        "token": None,        # здесь будем хранить JWT
+        "registered": False,  # флаг регистрации
     })
 
     # первое приветствие
@@ -76,9 +88,8 @@ def handle_smartapp():
             data
         ))
 
-    # проверяем регистрацию только один раз
-    if state["registered"] is None:
-        state["registered"] = is_registered(user_id)
+    # обновляем флаг registered на основании токена
+    state["registered"] = is_registered(user_id)
     registered = state["registered"]
 
     # команда «помощь»
@@ -117,8 +128,11 @@ def handle_smartapp():
                 json={"login": login, "password": password, "deviceID": user_id},
                 timeout=5
             )
-            print(f"[register] POST → {resp.status_code}")
+            print(f"[register] POST /user/registration → {resp.status_code}")
             if resp.ok:
+                body = resp.json()
+                # сохраняем токен из ответа
+                state["token"] = body.get("token")
                 state["registered"] = True
                 return jsonify(answer("Регистрация успешна! Скажите «Запиши сон».", data))
             else:
@@ -145,7 +159,7 @@ def handle_smartapp():
                 json={"text": text, "deviceID": user_id},
                 timeout=5
             )
-            print(f"[dream] POST → {resp.status_code}")
+            print(f"[dream] POST /api/dream → {resp.status_code}")
             resp.raise_for_status()
             return jsonify(answer(
                 "Сон записан! Хорошего вам дня 🤍\n"
@@ -179,6 +193,7 @@ def answer(text: str, data: dict, end_session: bool = False) -> dict:
 
 def default_error(data: dict) -> dict:
     return answer("Ошибка в запросе. Повторите ещё раз.", data, end_session=True)
+
 
 if __name__ == "__main__":
     import os
