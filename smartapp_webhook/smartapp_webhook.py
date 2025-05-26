@@ -13,22 +13,24 @@ app = Flask(__name__)
 # ---------- состояние пользователя --------------------------------
 user_state: dict[str, dict[str, bool | str]] = {}
 
-# --- фразы --------------------------------------------------------
+# ---------- фразы -------------------------------------------------
 activation_phrases: Final = {
-    "записать сон", "запиши сон", "запиши мой сон",
+    "записывать сон", "записать сон", "запиши сон", "запиши мой сон",
     "запись сна", "запись снов", "дневник снов",
     "запусти dreamember", "включи запись сна",
-    "Запусти дневник снов", "Запусти запись сна",
-    "Запусти запись снов", "Открой дневник снов"
+    "запусти дневник снов", "запусти запись сна",
+    "запусти запись снов", "открой дневник снов",
 }
 help_phrases: Final = {"помощь", "help", "что ты умеешь", "как пользоваться"}
 
+# ---------- /health -----------------------------------------------
 @app.route("/health", methods=["GET", "HEAD"])
 def health() -> Response:
     payload = {"status": "ok"}
     if request.method == "GET" and request.args.get("verbose") == "1":
         payload |= {"ts": int(time.time()), "users_in_mem": len(user_state)}
     return jsonify(payload)
+
 
 def is_registered(device_id: str) -> bool:
     try:
@@ -40,6 +42,8 @@ def is_registered(device_id: str) -> bool:
     except requests.RequestException:
         return False
 
+
+# ----------------------------- WEBHOOK ----------------------------
 @app.route("/webhook", methods=["POST"])
 def handle_smartapp():
     data = request.json
@@ -50,27 +54,24 @@ def handle_smartapp():
     print("========================")
 
     pl = data.get("payload", {})
-    # ─── приветствие на старте новой сессии ───────────
-    if pl.get("new_session", False):
+
+    # ─── приветствие при запуске навыка ───────────────────────
+    if pl.get("intent") == "run_app" or pl.get("new_session", False):
         return jsonify(answer(
             "Привет! Я «Дримембер» — ваш личный дневник снов.\n"
             "Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
             data
         ))
 
-    # ─── вытаскиваем userId и текст ────────────────────
+    # ─── извлекаем userId и текст ─────────────────────────────
     user_id = data.get("uuid", {}).get("userId")
     text = (
-        pl
-        .get("message", {})
-        .get("original_text", "")
-        .strip()
-        .lower()
+        pl.get("message", {}).get("original_text", "").strip().lower()
     )
     if not user_id or not text:
         return jsonify(default_error(data))
 
-    # ─── загружаем/инициализируем состояние ────────────
+    # ─── инициализируем состояние ─────────────────────────────
     state = user_state.setdefault(user_id, {
         "awaiting": False,
         "registered": False,
@@ -81,25 +82,26 @@ def handle_smartapp():
     if not state["registered"]:
         state["registered"] = is_registered(user_id)
 
-    # ─── команда «помощь» ──────────────────────────────
+    # ─── команда «помощь» ────────────────────────────────────
     if text in help_phrases:
         return jsonify(answer(
             "Я «Дримембер» — ваш дневник снов.\n"
-            "Чтобы начать:\n"
             "1) Скажите «Запиши сон».\n"
             "2) Расскажите сон до 90 секунд.\n"
-            "3) Сохранённые записи будет видно на сайте.",
+            "3) Позже посмотрите запись на сайте.",
             data
         ))
 
-    # ─── регистрация голосом (login → password) ────────
+    # ─── регистрация: запрос логина ──────────────────────────
     if not state["registered"] and not state["awaiting_login"] and not state["awaiting_password"]:
         if text in activation_phrases:
             state["awaiting_login"] = True
             return jsonify(answer(
-                "Чтобы зарегистрироваться, придумайте и произнесите логин (e-mail или любое слово).",
+                "Назовите логин (e-mail или любое слово).",
                 data
             ))
+
+    # ── ввод логина ───────────────────────────────────────────
     if state["awaiting_login"]:
         state["temp_login"] = text
         state["awaiting_login"] = False
@@ -108,13 +110,15 @@ def handle_smartapp():
             "Отлично! Теперь придумайте и скажите пароль.",
             data
         ))
+
+    # ── ввод пароля и запрос на регистрацию ──────────────────
     if state["awaiting_password"]:
         login = state["temp_login"]
         password = text
         state["awaiting_password"] = False
         try:
             resp = requests.post(
-                "https://dreamember.onrender.com/api/registration",
+                "https://dreamember.onrender.com/api/user/registration",   # ← исправлено
                 json={"login": login, "password": password, "deviceID": user_id},
                 timeout=5,
             )
@@ -122,38 +126,37 @@ def handle_smartapp():
             if resp.ok:
                 state["registered"] = True
                 return jsonify(answer(
-                    "Регистрация успешна! Скажите «Запиши сон», чтобы сохранить первую запись.",
+                    "Регистрация успешна! Скажите «Запиши сон», чтобы сохранить запись.",
                     data
                 ))
             else:
                 state["awaiting_login"] = True
                 return jsonify(answer(
-                    "Не получилось: возможно, логин занят. Назовите другой логин.",
+                    "Логин занят или данные неверны. Назовите другой логин.",
                     data
                 ))
         except Exception:
             print("Registration error:", traceback.format_exc())
             state["awaiting_login"] = True
             return jsonify(answer(
-                "Сервер регистрации недоступен, повторите чуть позже.",
+                "Сервер регистрации недоступен, повторите позже.",
                 data
             ))
 
-    # ─── активация записи сна ───────────────────────────
+    # ─── начало записи сна ───────────────────────────────────
     if text in activation_phrases:
         if state["awaiting"]:
-            return jsonify(answer("Я слушаю. Расскажите ваш сон.", data))
+            return jsonify(answer("Я слушаю. Расскажите сон.", data))
         state["awaiting"] = True
-        return jsonify(answer("Готов записать сон. Начинайте рассказывать.", data))
+        return jsonify(answer("Готов записать сон. Начинайте.", data))
 
-    # ─── приём текста сна ──────────────────────────────
+    # ─── приём текста сна ────────────────────────────────────
     if state["awaiting"]:
         state["awaiting"] = False
-        payload = {"text": text, "deviceID": user_id}
         try:
             resp = requests.post(
                 "https://dreamember.onrender.com/api/dream",
-                json=payload,
+                json={"text": text, "deviceID": user_id},
                 timeout=5,
             )
             print("Dream save response:", resp.status_code, resp.text)
@@ -162,14 +165,15 @@ def handle_smartapp():
         except Exception:
             print("Dream save error:", traceback.format_exc())
             state["awaiting"] = True
-            return jsonify(answer("Не смог сохранить сон. Попробуйте через минуту.", data))
+            return jsonify(answer("Не смог сохранить сон. Повторите позже.", data))
 
-    # ─── fallback ──────────────────────────────────────
+    # ─── fallback ────────────────────────────────────────────
     return jsonify(answer(
-        "Не расслышал. Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
+        "Не расслышал. Скажите «Запиши сон» или «Помощь».",
         data
     ))
 
+# ----------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ------------------------
 def answer(text: str, data: dict, end_session: bool = False) -> dict:
     return {
         "messageName": "ANSWER_TO_USER",
@@ -186,7 +190,7 @@ def answer(text: str, data: dict, end_session: bool = False) -> dict:
     }
 
 def default_error(data: dict) -> dict:
-    return answer("Ошибка в запросе. Повтори ещё раз.", data, end_session=True)
+    return answer("Ошибка в запросе. Повторите ещё раз.", data, end_session=True)
 
 if __name__ == "__main__":
     import os
