@@ -10,7 +10,6 @@ from flask import Flask, jsonify, request, Response
 app = Flask(__name__)
 
 # ---------- состояние пользователя --------------------------------
-# для каждого user_id храним состояние сессии
 user_state: dict[str, dict[str, bool | str | None]] = {}
 
 # ---------- фразы -------------------------------------------------
@@ -34,14 +33,14 @@ def health() -> Response:
 def is_registered(device_id: str) -> bool:
     """
     Проверяем, привязано ли устройство к аккаунту.
-    Используем эндпоинт /api/user/exists/{device_id}:
-      200 → есть, иначе → нет.
+    Ендпоинт: GET /api/device/{deviceID}/exists → 200 если есть, иначе 404.
     """
-    url = f"https://dreamember.onrender.com/api/user/exists/{device_id}"
+    url = f"https://dreamember.onrender.com/api/device/{device_id}/exists"
     try:
         r = requests.get(url, timeout=3)
-        print(f"[is_registered] GET {url} → {r.status_code}, body={r.text}")
-        return r.status_code == 200 and r.ok
+        # отладочный лог, можно убрать после проверки
+        print(f"[is_registered] GET {url} → {r.status_code}")
+        return r.status_code == 200
     except requests.RequestException as e:
         print(f"[is_registered] network error: {e}")
         return False
@@ -54,20 +53,21 @@ def handle_smartapp():
     user_id = data.get("uuid", {}).get("userId")
     text = pl.get("message", {}).get("original_text", "").strip().lower()
 
+    # если нет userId или пустой текст — возвращаем ошибку
     if not user_id or not text:
         return jsonify(default_error(data))
 
-    # состояние сессии
+    # инициализируем состояние для этого user_id
     state = user_state.setdefault(user_id, {
         "welcomed": False,
         "awaiting": False,
         "awaiting_login": False,
         "awaiting_password": False,
         "temp_login": "",
-        "registered": None,  # None — ещё не проверяли
+        "registered": None,  # None = еще не проверяли
     })
 
-    # приветствие при запуске
+    # первое приветствие
     if pl.get("intent") == "run_app" and not state["welcomed"]:
         state["welcomed"] = True
         return jsonify(answer(
@@ -76,12 +76,12 @@ def handle_smartapp():
             data
         ))
 
-    # проверяем регистрацию только один раз за сессию
+    # проверяем регистрацию только один раз
     if state["registered"] is None:
         state["registered"] = is_registered(user_id)
     registered = state["registered"]
 
-    # помощь
+    # команда «помощь»
     if text in help_phrases:
         return jsonify(answer(
             "Я «Дримембер» — ваш дневник снов.\n"
@@ -91,7 +91,7 @@ def handle_smartapp():
             data
         ))
 
-    # если не зарегистрирован и «запиши сон» — запускаем регистрацию
+    # если не зарегистрирован и сказал «запиши сон» — запускаем регистрацию
     if not registered and text in activation_phrases \
        and not state["awaiting_login"] and not state["awaiting_password"]:
         state["awaiting_login"] = True
@@ -107,7 +107,7 @@ def handle_smartapp():
         state["awaiting_password"] = True
         return jsonify(answer("Отлично! Теперь придумайте и скажите пароль.", data))
 
-    # ввод пароля и регистрация
+    # ввод пароля и регистрация на сервере
     if state["awaiting_password"]:
         login, password = state["temp_login"], text
         state["awaiting_password"] = False
@@ -117,7 +117,7 @@ def handle_smartapp():
                 json={"login": login, "password": password, "deviceID": user_id},
                 timeout=5
             )
-            print(f"[register] POST /registration → {resp.status_code}, body={resp.text}")
+            print(f"[register] POST → {resp.status_code}")
             if resp.ok:
                 state["registered"] = True
                 return jsonify(answer("Регистрация успешна! Скажите «Запиши сон».", data))
@@ -129,13 +129,14 @@ def handle_smartapp():
             state["awaiting_login"] = True
             return jsonify(answer("Сервер регистрации недоступен, повторите позже.", data))
 
-    # запись сна
+    # если зарегистрирован и «запиши сон» — включаем режим прослушивания
     if registered and text in activation_phrases:
         if state["awaiting"]:
             return jsonify(answer("Я слушаю. Расскажите сон.", data))
         state["awaiting"] = True
         return jsonify(answer("Готов записать сон. Начинайте.", data))
 
+    # сохраняем текст сна
     if state["awaiting"]:
         state["awaiting"] = False
         try:
@@ -144,7 +145,7 @@ def handle_smartapp():
                 json={"text": text, "deviceID": user_id},
                 timeout=5
             )
-            print(f"[dream] POST /dream → {resp.status_code}, body={resp.text}")
+            print(f"[dream] POST → {resp.status_code}")
             resp.raise_for_status()
             return jsonify(answer(
                 "Сон записан! Хорошего вам дня 🤍\n"
@@ -178,7 +179,6 @@ def answer(text: str, data: dict, end_session: bool = False) -> dict:
 
 def default_error(data: dict) -> dict:
     return answer("Ошибка в запросе. Повторите ещё раз.", data, end_session=True)
-
 
 if __name__ == "__main__":
     import os
