@@ -9,16 +9,19 @@ import psycopg2
 from psycopg2 import sql
 import requests
 from flask import Flask, jsonify, request, Response
+from dotenv import load_dotenv
+
+# Load environment variables from .env
+load_dotenv()
 
 app = Flask(__name__)
 
 # ---------- подключение к Postgres через psycopg2 ----------------
-# параметры подключения из вашего сообщения
-DB_HOST     = "dpg-d0id4i24d50c73fubt30-a.frankfurt-postgres.render.com"
-DB_PORT     = "5432"
-DB_NAME     = "dreamember"
-DB_USER     = "dreamember"
-DB_PASSWORD = "VtYJPSMSTPUTCz6rbhNpIXgRC4wvuo5L"
+DB_HOST     = os.getenv("DB_HOST")
+DB_PORT     = os.getenv("DB_PORT")
+DB_NAME     = os.getenv("DB_NAME")
+DB_USER     = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
 
 db_conn = psycopg2.connect(
     host     = DB_HOST,
@@ -46,7 +49,6 @@ def check_device_registered(device_id: str) -> bool:
     except Exception as e:
         print(f"[DB CHECK] error: {e}")
         return False
-
 
 # ---------- состояние пользователя --------------------------------
 user_state: dict[str, dict[str, bool | str | None]] = {}
@@ -88,7 +90,7 @@ def handle_smartapp():
         "temp_login": "",
     })
 
-    # приветствие
+    # первое приветствие
     if pl.get("intent") == "run_app" and not state["welcomed"]:
         state["welcomed"] = True
         return jsonify(answer(
@@ -97,7 +99,7 @@ def handle_smartapp():
             data
         ))
 
-    # помощь
+    # команда «помощь»
     if text in help_phrases:
         return jsonify(answer(
             "Я «Дримембер» — ваш дневник снов.\n"
@@ -114,15 +116,6 @@ def handle_smartapp():
         state["awaiting_password"] = True
         return jsonify(answer("Отлично! Теперь придумайте и скажите пароль.", data))
 
-    if text == "":
-        state["welcomed"] = False
-        state["welcomed"] = True
-        return jsonify(answer(
-            "Привет! Я «Дримембер» — ваш личный дневник снов.\n"
-            "Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
-            data
-        ))
-
     # ввод пароля и регистрация
     if state["awaiting_password"]:
         login, password = state["temp_login"], text
@@ -137,8 +130,21 @@ def handle_smartapp():
             if resp.ok:
                 return jsonify(answer("Регистрация успешна! Скажите «Запиши сон».", data))
             else:
+                # разбираем сообщение об ошибке
+                err = ""
+                try:
+                    err = resp.json().get("message", "").lower()
+                except Exception:
+                    pass
+                if "login" in err:
+                    state["awaiting_login"] = True
+                    return jsonify(answer("Логин занят. Назовите другой логин.", data))
+                if "deviceid" in err or "колонки" in err or "привяз" in err:
+                    # сразу переходим к записи сна
+                    state["awaiting"] = True
+                    return jsonify(answer("Ваша колонка уже привязана. Расскажите сон.", data))
                 state["awaiting_login"] = True
-                return jsonify(answer("Логин занят. Назовите другой логин.", data))
+                return jsonify(answer("Не удалось зарегистрироваться. Назовите логин ещё раз.", data))
         except Exception as e:
             print(f"[register] error: {e}\n{traceback.format_exc()}")
             state["awaiting_login"] = True
