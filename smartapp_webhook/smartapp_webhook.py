@@ -48,16 +48,23 @@ def handle_smartapp():
     pl = data.get("payload", {})
     user_id = data.get("uuid", {}).get("userId")
 
+    state = user_state.setdefault(user_id, {
+        "welcomed": False,  # <- чтобы welcome показывался 1 раз
+        "awaiting": False,
+        "registered": False,
+        "awaiting_login": False,
+        "awaiting_password": False,
+        "temp_login": ""
+    })
+
     # ─── welcome только один раз за сессию ──────────────────────
-    if pl.get("intent") == "run_app":
-        st = user_state.setdefault(user_id, {"welcomed": False})
-        if not st.get("welcomed"):
-            st["welcomed"] = True
-            return jsonify(answer(
-                "Привет! Я «Дримембер» — ваш личный дневник снов.\n"
-                "Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
-                data
-            ))
+    if pl.get("intent") == "run_app" and not state["welcomed"]:
+        state["welcomed"] = True
+        return jsonify(answer(
+            "Привет! Я «Дримембер» — ваш личный дневник снов.\n"
+            "Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
+            data
+        ))
 
     # ─── извлекаем текст ─────────────────────────────────────────
     text = pl.get("message", {}).get("original_text", "").strip().lower()
@@ -65,13 +72,7 @@ def handle_smartapp():
         return jsonify(default_error(data))
 
     # ─── состояние пользователя ─────────────────────────────────
-    state = user_state.setdefault(user_id, {
-        "awaiting": False,
-        "registered": False,
-        "awaiting_login": False,
-        "awaiting_password": False,
-        "temp_login": ""
-    })
+
     if not state["registered"]:
         state["registered"] = is_registered(user_id)
 
