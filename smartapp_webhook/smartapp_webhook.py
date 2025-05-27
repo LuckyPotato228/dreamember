@@ -3,13 +3,13 @@ import os
 import json
 import time
 import traceback
+import re
 from typing import Final
 
 import psycopg2
 from psycopg2 import sql
 import requests
 from flask import Flask, jsonify, request, Response
-
 
 app = Flask(__name__)
 
@@ -31,7 +31,7 @@ db_conn.autocommit = True
 
 def check_device_registered(device_id: str) -> bool:
     """
-    Проверяем в таблице Users наличие записи с данным deviceID.
+    Проверяем в таблице users наличие записи с данным deviceID.
     """
     try:
         with db_conn.cursor() as cur:
@@ -106,16 +106,30 @@ def handle_smartapp():
             data
         ))
 
-    # ввод логина
+    # ввод логина (QoL: проверяем длину и допустимые символы)
     if state["awaiting_login"]:
-        state["temp_login"] = text
+        login_input = text
+        if len(login_input) < 3 or not re.match(r'^[A-Za-z0-9_-]+$', login_input):
+            # повторяем запрос логина
+            return jsonify(answer(
+                "Логин должен быть не менее 3 символов и состоять только из букв, цифр, \"-\" и \"_\"."
+                " Назовите логин ещё раз.", data
+            ))
+        state["temp_login"] = login_input
         state["awaiting_login"] = False
         state["awaiting_password"] = True
         return jsonify(answer("Отлично! Теперь придумайте и скажите пароль.", data))
 
-    # ввод пароля и регистрация
+    # ввод пароля и регистрация (QoL: проверка пароля)
     if state["awaiting_password"]:
-        login, password = state["temp_login"], text
+        password = text
+        if len(password) < 8 or not re.match(r'^[A-Za-z0-9_-]+$', password):
+            state["awaiting_password"] = True
+            return jsonify(answer(
+                "Пароль должен быть не короче 8 символов и состоять только из букв, цифр, \"-\" и \"_\"."
+                " Придумайте пароль ещё раз.", data
+            ))
+        login = state.get("temp_login", "")
         state["awaiting_password"] = False
         try:
             resp = requests.post(
@@ -137,7 +151,6 @@ def handle_smartapp():
                     state["awaiting_login"] = True
                     return jsonify(answer("Логин занят. Назовите другой логин.", data))
                 if "deviceid" in err or "колонки" in err or "привяз" in err:
-                    # сразу переходим к записи сна
                     state["awaiting"] = True
                     return jsonify(answer("Ваша колонка уже привязана. Расскажите сон.", data))
                 state["awaiting_login"] = True
@@ -189,8 +202,8 @@ def handle_smartapp():
 
     # fallback
     return jsonify(answer(
-        "Не расслышал команду. Скажите «Запиши сон» или «Помощь».",
-        data
+        "Не расслышал команду. Скажите «Запиши сон» или «Помощь"
+        , data
     ))
 
 # ----------------- вспомогательные функции ------------------------
@@ -217,4 +230,4 @@ def default_error(data: dict) -> dict:
     )
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
