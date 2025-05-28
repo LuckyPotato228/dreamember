@@ -113,7 +113,7 @@ def handle_smartapp():
         and text in activation_phrases):
         state["awaiting_login"] = True
         return jsonify(answer(
-            "Назовите логин латиницей — e-mail или любое слово.",
+            "Назовите логин латиницей (только маленькие буквы и цифры).",
             data
         ))
 
@@ -121,7 +121,7 @@ def handle_smartapp():
         login_input = text
         if len(login_input) < 3 or not re.fullmatch(r'[A-Za-z0-9_-]+', login_input):
             return jsonify(answer(
-                "Логин минимум 3 символа, только латиница, цифры, «-» и «_». "
+                "Логин минимум 3 символа, только строчные латинские буквы, цифры, «-» и «_». "
                 "Назовите логин ещё раз.", data
             ))
         state["temp_login"] = login_input.lower()                       # 💡 нормализуем
