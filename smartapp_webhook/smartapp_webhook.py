@@ -8,7 +8,7 @@ from flask import Flask, jsonify, request, Response
 
 app = Flask(__name__)
 
-# ---------- Postgres ----------------------------------------------
+# ---------- Postgres ---------------------------------------------
 DB_HOST, DB_PORT = os.getenv("DB_HOST"), os.getenv("DB_PORT")
 DB_NAME, DB_USER = os.getenv("DB_NAME"), os.getenv("DB_USER")
 DB_PASSWORD      = os.getenv("DB_PASSWORD")
@@ -20,194 +20,179 @@ db_conn = psycopg2.connect(
 db_conn.autocommit = True
 
 def check_device_registered(device_id: str) -> bool:
-    try:
-        with db_conn.cursor() as cur:
-            cur.execute(
-                sql.SQL("SELECT 1 FROM {t} WHERE {c}=%s LIMIT 1")
-                   .format(t=sql.Identifier("users"), c=sql.Identifier("deviceID")),
-                (device_id,))
-            return cur.fetchone() is not None
-    except Exception as e:
-        print("[DB CHECK] error:", e)
-        return False
+    with db_conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("SELECT 1 FROM {t} WHERE {c}=%s LIMIT 1")
+               .format(t=sql.Identifier("users"), c=sql.Identifier("deviceID")),
+            (device_id,))
+        return cur.fetchone() is not None
 
-# ---------- helpers: tone -----------------------------------------
-def tone(data: dict) -> str:
-    """возвращает 'ty' для Joy, 'vy' для Sber/Athena"""
-    char_id = data.get("payload", {}).get("character", {}).get("id", "sber")
-    return "ty" if char_id == "joy" else "vy"
+# ---------- тон & замены -----------------------------------------
+def voice(data: dict) -> str:                       # joy / athena / sber
+    return data.get("payload", {}).get("character", {}).get("id", "sber")
 
-def adapt(template: str, t: str) -> str:
-    """подменяет {you}/{your} в шаблоне"""
-    repl = {"ty": ("тебе", "твой"), "vy": ("вам", "ваш")}
-    return template.replace("{you}", repl[t][0]).replace("{your}", repl[t][1])
+PH = {                   # «ты»-вариант , «вы»-вариант
+    "{say}"      : ("Скажи"    , "Скажите"),
+    "{tell}"     : ("Назови"   , "Назовите"),
+    "{create}"   : ("Придумай" , "Придумайте"),
+    "{repeat}"   : ("Повтори"  , "Повторите"),
+    "{describe}" : ("Расскажи" , "Расскажите"),
+    "{start}"    : ("Начинай"  , "Начинайте"),
+    "{ready}"    : ("готова"   , "готова/готов"),   # жен. / муж. ниже
+    "{you}"      : ("тебе"     , "вам"),
+    "{your}"     : ("твой"     , "ваш"),
+}
+
+def adapt(text: str, v: str) -> str:
+    """v=voice → вставляем нужные формы."""
+    is_ty = v == "joy"
+    rep   = {k: (ty if is_ty else vy) for k,(ty,vy) in PH.items()}
+    # муж./жен. род для «ready»
+    if not is_ty and v != "athena":
+        rep["{ready}"] = "готов"
+    elif not is_ty and v == "athena":
+        rep["{ready}"] = "готова"
+    for k, val in rep.items():
+        text = text.replace(k, val)
+    return text
 
 URL_RE = re.compile(r'https?://\S+|<[^>]+>')
 
-# ---------- runtime state -----------------------------------------
+# ---------- runtime-state -----------------------------------------
 user_state: dict[str, dict[str, bool | str]] = {}
 
 # ---------- phrases ----------------------------------------------
 activation_phrases: Final = {
-    "записать сон", "запиши сон", "запиши мой сон",
-    "запись сна", "запись снов", "дневник снов",
-    "запусти dreamember", "включи запись сна",
-    "запусти дневник снов", "запусти запись сна",
-    "запусти запись снов", "открой дневник снов",
+    "записать сон","запиши сон","запиши мой сон",
+    "запись сна","запись снов","дневник снов",
+    "запусти dreamember","включи запись сна",
+    "запусти дневник снов","запусти запись сна",
+    "запусти запись снов","открой дневник снов",
 }
-help_phrases: Final = {"помощь", "help", "что ты умеешь", "как пользоваться"}
+help_phrases: Final = {"помощь","help","что ты умеешь","как пользоваться"}
 
-# ---------------- health ------------------------------------------
+# ---------- health ------------------------------------------------
 @app.route("/health", methods=["GET","HEAD"])
 def health() -> Response:
-    payload = {"status": "ok"}
-    if request.method == "GET" and request.args.get("verbose") == "1":
-        payload |= {"ts": int(time.time()), "users_in_mem": len(user_state)}
-    return jsonify(payload)
+    return jsonify({"status":"ok","users":len(user_state)})
 
-# ---------------- webhook -----------------------------------------
+# ---------- webhook ----------------------------------------------
 @app.route("/webhook", methods=["POST"])
 def handle_smartapp():
     data    = request.json or {}
     pl      = data.get("payload", {})
     user_id = data.get("uuid", {}).get("userId")
     text    = pl.get("message", {}).get("original_text", "").strip().lower()
-    t       = tone(data)
+    v       = voice(data)
 
     # лог
     print("=== Incoming webhook ===")
     print(json.dumps(data, ensure_ascii=False, indent=2))
+    print(f"Assistant voice: {v}")
     print("========================")
 
     if not user_id:
         return jsonify(default_error(data))
 
-    state = user_state.setdefault(user_id, {
-        "welcomed": False,
-        "awaiting": False,
-        "awaiting_login": False,
-        "awaiting_password": False,
-        "temp_login": "",
-        "registered": None
+    st = user_state.setdefault(user_id, {
+        "welcomed": False,"awaiting": False,
+        "awaiting_login": False,"awaiting_password": False,
+        "temp_login": "","registered": None
     })
-    if state["registered"] is None:
-        state["registered"] = check_device_registered(user_id)
+    if st["registered"] is None:
+        st["registered"] = check_device_registered(user_id)
 
-    # welcome
-    if pl.get("intent") == "run_app" and not state["welcomed"]:
-        state["welcomed"] = True
-        return jsonify(answer(
-            adapt("Привет! Я «Дримембер» — {your} дневник снов.\n"
-                  "Скажи «Запиши сон» или «Помощь», чтобы я помог {you}.", t),
-            data
-        ))
+    # ---------- welcome -------------------------------------------
+    if pl.get("intent") == "run_app" and not st["welcomed"]:
+        st["welcomed"] = True
+        return jsonify(answer(adapt(
+            "Привет! Я «Дримембер» — {your} дневник снов.\n"
+            "{say} «Запиши сон» или «Помощь», чтобы я помог {you}.", v), data))
 
     if text == "":
-        return jsonify(answer(
-            adapt("Привет! Я «Дримембер». Скажи «Запиши сон».", t),
-            data
-        ))
+        return jsonify(answer(adapt(
+            "Привет! Я «Дримембер». {say} «Запиши сон».", v), data))
 
-    # help
+    # ---------- help ----------------------------------------------
     if text in help_phrases:
-        return jsonify(answer(
-            adapt("Я «Дримембер».\n"
-                  "1) Скажи «Запиши сон».\n"
-                  "2) Расскажи сон (до 90 сек.) — я сохраню для {you}.", t),
-            data
-        ))
+        return jsonify(answer(adapt(
+            "Я «Дримембер».\n1) {say} «Запиши сон».\n"
+            "2) {describe} сон (до 90 сек.).", v), data))
 
-    # --- регистрация ---
-    if (not state["registered"]
-        and not state["awaiting_login"]
-        and not state["awaiting_password"]
-        and text in activation_phrases):
-        state["awaiting_login"] = True
-        return jsonify(answer(
-            adapt("Назови логин (строчные латинские буквы/цифры).", t),
-            data
-        ))
+    # ---------- REGISTRATION --------------------------------------
+    if (not st["registered"] and not st["awaiting_login"]
+        and not st["awaiting_password"] and text in activation_phrases):
+        st["awaiting_login"] = True
+        return jsonify(answer(adapt(
+            "{tell} логин латиницей (строчные буквы/цифры).", v), data))
 
-    if state["awaiting_login"]:
-        login_input = text
-        if len(login_input) < 3 or not re.fullmatch(r'[a-z0-9_-]+', login_input):
-            return jsonify(answer(
-                adapt("Логин ≥3 символа, только буквы/цифры, «-», «_». Повтори логин.", t),
-                data
-            ))
-        state["temp_login"] = login_input
-        state["awaiting_login"] = False
-        state["awaiting_password"] = True
-        return jsonify(answer(
-            adapt("Теперь придумай пароль (≥8 символов).", t),
-            data
-        ))
+    if st["awaiting_login"]:
+        if len(text) < 3 or not re.fullmatch(r'[a-z0-9_-]+', text):
+            return jsonify(answer(adapt(
+                "Логин ≥3 символов, буквы, цифры, «-»,«_». {repeat} логин.", v), data))
+        st["temp_login"] = text
+        st["awaiting_login"] = False
+        st["awaiting_password"] = True
+        return jsonify(answer(adapt(
+            "{create} пароль (≥8 символов).", v), data))
 
-    if state["awaiting_password"]:
-        password = text
-        if len(password) < 8 or not re.fullmatch(r'[A-Za-z0-9_-]+', password):
-            return jsonify(answer(
-                adapt("Пароль ≥8 символов, латиница/цифры. Повтори пароль.", t),
-                data
-            ))
-        login = state["temp_login"]
-        state["awaiting_password"] = False
+    if st["awaiting_password"]:
+        if len(text) < 8 or not re.fullmatch(r'[A-Za-z0-9_-]+', text):
+            return jsonify(answer(adapt(
+                "Пароль ≥8 символов, латиница/цифры. {repeat} пароль.", v), data))
         try:
             resp = requests.post(
                 "https://dreamember.onrender.com/api/user/registration",
-                json={"login": login, "password": password, "deviceID": user_id},
+                json={"login": st["temp_login"], "password": text, "deviceID": user_id},
                 timeout=5)
             if resp.ok:
-                state["registered"] = True
-                return jsonify(answer(
-                    adapt("Регистрация успешна! Скажи «Запиши сон».", t), data))
-            state["awaiting_login"] = True
-            return jsonify(answer(
-                adapt("Логин занят. Назови другой логин.", t), data))
+                st["registered"] = True
+                return jsonify(answer(adapt(
+                    "Регистрация успешна! {say} «Запиши сон».", v), data))
+            st["awaiting_login"] = True
+            return jsonify(answer(adapt(
+                "Логин занят. {tell} другой логин.", v), data))
         except Exception:
-            state["awaiting_login"] = True
-            print("[REGISTER] error:", traceback.format_exc())
-            return jsonify(answer(
-                adapt("Сервер регистрации недоступен, повтори позже.", t), data))
+            st["awaiting_login"] = True
+            return jsonify(answer(adapt(
+                "Сервер регистрации недоступен, {repeat} позже.", v), data))
 
-    # --- запись сна ---
+    # ---------- RECORD DREAM --------------------------------------
     if text in activation_phrases:
-        if not state["registered"]:
-            state["awaiting_login"] = True
-            return jsonify(answer(
-                adapt("Устройство не привязано. Назови логин.", t), data))
-        if state["awaiting"]:
-            return jsonify(answer(adapt("Я слушаю, расскажи сон.", t), data))
-        state["awaiting"] = True
-        return jsonify(answer(adapt("Готов записать сон. Начинай.", t), data))
+        if not st["registered"]:
+            st["awaiting_login"] = True
+            return jsonify(answer(adapt(
+                "Устройство не привязано. {tell} логин.", v), data))
+        if st["awaiting"]:
+            return jsonify(answer(adapt(
+                "Я слушаю, {describe} сон.", v), data))
+        st["awaiting"] = True
+        return jsonify(answer(adapt(
+            "{ready} записать {your} сон. {start}.", v), data))
 
-    if state["awaiting"]:
-        state["awaiting"] = False
+    if st["awaiting"]:
+        st["awaiting"] = False
         try:
             resp = requests.post(
                 "https://dreamember.onrender.com/api/dream",
                 json={"text": text, "deviceID": user_id},
                 timeout=5)
             resp.raise_for_status()
-            return jsonify(answer(
-                adapt("Сон записан! Хорошего дня 🤍\n"
-                      "Посмотреть записи можно на <https://dreamember.onrender.com/>", t),
-                data))
+            return jsonify(answer(adapt(
+                "Сон записан! Хорошего дня 🤍\n"
+                "Записи на сайте: https://dreamember.onrender.com/", v), data))
         except Exception:
-            state["awaiting"] = True
-            print("[DREAM SAVE] error:", traceback.format_exc())
-            return jsonify(answer(
-                adapt("Сервер недоступен, повтори позже.", t), data))
+            st["awaiting"] = True
+            return jsonify(answer(adapt(
+                "Сервер недоступен, {repeat} позже.", v), data))
 
-    # fallback
-    return jsonify(answer(
-        adapt("Не расслышал. Скажи «Запиши сон» или «Помощь».", t), data
-    ))
+    # ---------- fallback ------------------------------------------
+    return jsonify(answer(adapt(
+        "Не расслышал. {say} «Запиши сон».", v), data))
 
-# ------------------- answer & default -----------------------------
+# ---------- answer / default --------------------------------------
 def answer(text: str, data: dict, end_session: bool = False) -> dict:
-    char_id = data.get("payload", {}).get("character", {}).get("id", "sber")
-    pronounce = URL_RE.sub("сайте", text) if char_id in {"sber", "athena"} else text
+    pronounce = URL_RE.sub("сайте", text)        # ссылки ≠ озвучиваем
     return {
         "messageName": "ANSWER_TO_USER",
         "sessionId": data["sessionId"],
@@ -223,9 +208,8 @@ def answer(text: str, data: dict, end_session: bool = False) -> dict:
     }
 
 def default_error(data: dict) -> dict:
-    return answer(
-        adapt("Техническая ошибка. Попробуй ещё раз.", tone(data)), data, end_session=True
-    )
+    return answer(adapt(
+        "Техническая ошибка. {repeat} позже.", voice(data)), data, True)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
