@@ -8,10 +8,10 @@ from flask import Flask, jsonify, request, Response
 
 app = Flask(__name__)
 
-# ---------- PostgreSQL --------------------------------------------
-DB_HOST, DB_PORT   = os.getenv("DB_HOST"), os.getenv("DB_PORT")
-DB_NAME, DB_USER   = os.getenv("DB_NAME"), os.getenv("DB_USER")
-DB_PASSWORD        = os.getenv("DB_PASSWORD")
+# ---------- Postgres ----------------------------------------------
+DB_HOST, DB_PORT = os.getenv("DB_HOST"), os.getenv("DB_PORT")
+DB_NAME, DB_USER = os.getenv("DB_NAME"), os.getenv("DB_USER")
+DB_PASSWORD      = os.getenv("DB_PASSWORD")
 
 db_conn = psycopg2.connect(
     host=DB_HOST, port=DB_PORT, dbname=DB_NAME,
@@ -25,53 +25,63 @@ def check_device_registered(device_id: str) -> bool:
             cur.execute(
                 sql.SQL("SELECT 1 FROM {t} WHERE {c}=%s LIMIT 1")
                    .format(t=sql.Identifier("users"), c=sql.Identifier("deviceID")),
-                (device_id,)
-            )
+                (device_id,))
             return cur.fetchone() is not None
     except Exception as e:
-        print(f"[DB CHECK] error: {e}")
+        print("[DB CHECK] error:", e)
         return False
 
-# ---------- runtime-состояние -------------------------------------
+# ---------- helpers: tone -----------------------------------------
+def tone(data: dict) -> str:
+    """возвращает 'ty' для Joy, 'vy' для Sber/Athena"""
+    char_id = data.get("payload", {}).get("character", {}).get("id", "sber")
+    return "ty" if char_id == "joy" else "vy"
+
+def adapt(template: str, t: str) -> str:
+    """подменяет {you}/{your} в шаблоне"""
+    repl = {"ty": ("тебе", "твой"), "vy": ("вам", "ваш")}
+    return template.replace("{you}", repl[t][0]).replace("{your}", repl[t][1])
+
+URL_RE = re.compile(r'https?://\S+|<[^>]+>')
+
+# ---------- runtime state -----------------------------------------
 user_state: dict[str, dict[str, bool | str]] = {}
 
-# ---------- фразы --------------------------------------------------
+# ---------- phrases ----------------------------------------------
 activation_phrases: Final = {
-    "записать сон","запиши сон","запиши мой сон",
-    "запись сна","запись снов","дневник снов",
-    "запусти dreamember","включи запись сна",
-    "запусти дневник снов","запусти запись сна",
-    "запусти запись снов","открой дневник снов",
+    "записать сон", "запиши сон", "запиши мой сон",
+    "запись сна", "запись снов", "дневник снов",
+    "запусти dreamember", "включи запись сна",
+    "запусти дневник снов", "запусти запись сна",
+    "запусти запись снов", "открой дневник снов",
 }
-help_phrases: Final = {"помощь","help","что ты умеешь","как пользоваться"}
+help_phrases: Final = {"помощь", "help", "что ты умеешь", "как пользоваться"}
 
-# ---------- health-эндпойнт ---------------------------------------
+# ---------------- health ------------------------------------------
 @app.route("/health", methods=["GET","HEAD"])
 def health() -> Response:
-    payload = {"status":"ok"}
+    payload = {"status": "ok"}
     if request.method == "GET" and request.args.get("verbose") == "1":
-        payload |= {"ts":int(time.time()),"users_in_mem":len(user_state)}
+        payload |= {"ts": int(time.time()), "users_in_mem": len(user_state)}
     return jsonify(payload)
 
-# ----------------------------- WEBHOOK -----------------------------
+# ---------------- webhook -----------------------------------------
 @app.route("/webhook", methods=["POST"])
 def handle_smartapp():
     data    = request.json or {}
     pl      = data.get("payload", {})
     user_id = data.get("uuid", {}).get("userId")
     text    = pl.get("message", {}).get("original_text", "").strip().lower()
+    t       = tone(data)
 
-    # 💬 выводим полный JSON + какой ассистент выбран
+    # лог
     print("=== Incoming webhook ===")
     print(json.dumps(data, ensure_ascii=False, indent=2))
-    char_id = pl.get("character", {}).get("id", "sber")
-    print(f"Assistant voice: {char_id}")
     print("========================")
 
     if not user_id:
         return jsonify(default_error(data))
 
-    # ---------- состояние пользователя ----------------------------
     state = user_state.setdefault(user_id, {
         "welcomed": False,
         "awaiting": False,
@@ -83,41 +93,38 @@ def handle_smartapp():
     if state["registered"] is None:
         state["registered"] = check_device_registered(user_id)
 
-    # ---------- welcome (один раз) --------------------------------
+    # welcome
     if pl.get("intent") == "run_app" and not state["welcomed"]:
         state["welcomed"] = True
         return jsonify(answer(
-            "Привет! Я «Дримембер» — ваш дневник снов.\n"
-            "Скажите «Запиши сон» или «Помощь», чтобы узнать команды.",
+            adapt("Привет! Я «Дримембер» — {your} дневник снов.\n"
+                  "Скажи «Запиши сон» или «Помощь», чтобы я помог {you}.", t),
             data
         ))
 
-    # если пользователь молчит (пустой текст)
     if text == "":
         return jsonify(answer(
-            "Привет! Я «Дримембер» — ваш дневник снов.\n"
-            "Скажите «Запиши сон» или «Помощь».",
+            adapt("Привет! Я «Дримембер». Скажи «Запиши сон».", t),
             data
         ))
 
-    # ---------- помощь --------------------------------------------
+    # help
     if text in help_phrases:
         return jsonify(answer(
-            "Я «Дримембер».\n"
-            "1) Скажите «Запиши сон».\n"
-            "2) Расскажите сон (до 90 сек.).\n"
-            "3) Смотрите записи на сайте.",
+            adapt("Я «Дримембер».\n"
+                  "1) Скажи «Запиши сон».\n"
+                  "2) Расскажи сон (до 90 сек.) — я сохраню для {you}.", t),
             data
         ))
 
-    # ---------- регистрация ---------------------------------------
+    # --- регистрация ---
     if (not state["registered"]
         and not state["awaiting_login"]
         and not state["awaiting_password"]
         and text in activation_phrases):
         state["awaiting_login"] = True
         return jsonify(answer(
-            "Назовите логин латиницей (только маленькие буквы/цифры).",
+            adapt("Назови логин (строчные латинские буквы/цифры).", t),
             data
         ))
 
@@ -125,14 +132,14 @@ def handle_smartapp():
         login_input = text
         if len(login_input) < 3 or not re.fullmatch(r'[a-z0-9_-]+', login_input):
             return jsonify(answer(
-                "Логин ≥3 символов, маленькие латинские буквы, цифры, «-» и «_». "
-                "Повторите логин.", data
+                adapt("Логин ≥3 символа, только буквы/цифры, «-», «_». Повтори логин.", t),
+                data
             ))
-        state["temp_login"] = login_input  # храним в нижнем регистре
+        state["temp_login"] = login_input
         state["awaiting_login"] = False
         state["awaiting_password"] = True
         return jsonify(answer(
-            "Теперь придумайте пароль (≥8 символов, латиница/цифры).",
+            adapt("Теперь придумай пароль (≥8 символов).", t),
             data
         ))
 
@@ -140,7 +147,7 @@ def handle_smartapp():
         password = text
         if len(password) < 8 or not re.fullmatch(r'[A-Za-z0-9_-]+', password):
             return jsonify(answer(
-                "Пароль ≥8 символов, используйте латиницу/цифры.",
+                adapt("Пароль ≥8 символов, латиница/цифры. Повтори пароль.", t),
                 data
             ))
         login = state["temp_login"]
@@ -152,26 +159,27 @@ def handle_smartapp():
                 timeout=5)
             if resp.ok:
                 state["registered"] = True
-                return jsonify(answer("Регистрация успешна! Скажите «Запиши сон».", data))
+                return jsonify(answer(
+                    adapt("Регистрация успешна! Скажи «Запиши сон».", t), data))
             state["awaiting_login"] = True
-            return jsonify(answer("Логин занят, назовите другой.", data))
+            return jsonify(answer(
+                adapt("Логин занят. Назови другой логин.", t), data))
         except Exception:
             state["awaiting_login"] = True
             print("[REGISTER] error:", traceback.format_exc())
-            return jsonify(answer("Сервер регистрации недоступен, повторите позже.", data))
+            return jsonify(answer(
+                adapt("Сервер регистрации недоступен, повтори позже.", t), data))
 
-    # ---------- запись сна ----------------------------------------
+    # --- запись сна ---
     if text in activation_phrases:
         if not state["registered"]:
             state["awaiting_login"] = True
             return jsonify(answer(
-                "Устройство ещё не привязано. Назовите логин латиницей.",
-                data
-            ))
+                adapt("Устройство не привязано. Назови логин.", t), data))
         if state["awaiting"]:
-            return jsonify(answer("Я слушаю. Расскажите сон.", data))
+            return jsonify(answer(adapt("Я слушаю, расскажи сон.", t), data))
         state["awaiting"] = True
-        return jsonify(answer("Готов записать сон. Начинайте.", data))
+        return jsonify(answer(adapt("Готов записать сон. Начинай.", t), data))
 
     if state["awaiting"]:
         state["awaiting"] = False
@@ -182,31 +190,22 @@ def handle_smartapp():
                 timeout=5)
             resp.raise_for_status()
             return jsonify(answer(
-                "Сон записан! Хорошего дня 🤍\n"
-                "Просмотреть сны можно на сайте: <https://dreamember.onrender.com/>",
-                data
-            ))
+                adapt("Сон записан! Хорошего дня 🤍\n"
+                      "Посмотреть записи можно на <https://dreamember.onrender.com/>", t),
+                data))
         except Exception:
             state["awaiting"] = True
             print("[DREAM SAVE] error:", traceback.format_exc())
             return jsonify(answer(
-                "Сервер временно недоступен. Повторите позже.",
-                data
-            ))
+                adapt("Сервер недоступен, повтори позже.", t), data))
 
-    # ---------- fallback ------------------------------------------
+    # fallback
     return jsonify(answer(
-        "Не расслышал. Скажите «Запиши сон» или «Помощь».",
-        data
+        adapt("Не расслышал. Скажи «Запиши сон» или «Помощь».", t), data
     ))
 
-# ------------------- вспомогательные функции ----------------------
-URL_RE = re.compile(r'https?://\\S+|<[^>]+>')
-
+# ------------------- answer & default -----------------------------
 def answer(text: str, data: dict, end_session: bool = False) -> dict:
-    """
-    Сбер/Афина не зачитывают URL — заменяем на «сайте»
-    """
     char_id = data.get("payload", {}).get("character", {}).get("id", "sber")
     pronounce = URL_RE.sub("сайте", text) if char_id in {"sber", "athena"} else text
     return {
@@ -224,7 +223,9 @@ def answer(text: str, data: dict, end_session: bool = False) -> dict:
     }
 
 def default_error(data: dict) -> dict:
-    return answer("Ошибка. Попробуйте ещё раз.", data, end_session=True)
+    return answer(
+        adapt("Техническая ошибка. Попробуй ещё раз.", tone(data)), data, end_session=True
+    )
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
