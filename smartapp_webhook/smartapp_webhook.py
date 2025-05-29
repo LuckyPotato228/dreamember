@@ -27,36 +27,45 @@ def check_device_registered(device_id: str) -> bool:
             (device_id,))
         return cur.fetchone() is not None
 
-# ---------- тон & замены -----------------------------------------
-def voice(data: dict) -> str:                       # joy / athena / sber
+# ---------- helpers: voice & placeholders -------------------------
+def voice(data: dict) -> str:                               # joy / athena / sber
     return data.get("payload", {}).get("character", {}).get("id", "sber")
 
-PH = {                   # «ты»-вариант , «вы»-вариант
-    "{say}"      : ("Скажи"    , "Скажите"),
-    "{tell}"     : ("Назови"   , "Назовите"),
-    "{create}"   : ("Придумай" , "Придумайте"),
-    "{repeat}"   : ("Повтори"  , "Повторите"),
-    "{describe}" : ("Расскажи" , "Расскажите"),
-    "{start}"    : ("Начинай"  , "Начинайте"),
-    "{ready}"    : ("готова"   , "готова/готов"),   # жен. / муж. ниже
-    "{you}"      : ("тебе"     , "вам"),
-    "{your}"     : ("твой"     , "ваш"),
+PH = {                       # «ты»-вариант , «вы»-вариант
+    "{say}"     : ("Скажи"   , "Скажите"),
+    "{tell}"    : ("Назови"  , "Назовите"),
+    "{create}"  : ("Придумай", "Придумайте"),
+    "{repeat}"  : ("Повтори" , "Повторите"),
+    "{describe}": ("Расскажи", "Расскажите"),
+    "{start}"   : ("Начинай" , "Начинайте"),
+    "{ready}"   : ("готова"  , "готова/готов"),   # жен. / муж. ниже
+    "{you}"     : ("тебе"    , "вам"),
+    "{your}"    : ("твой"    , "ваш"),
+    "{help}"    : ("помогла" , "помогла/помог"),  # уточняется ниже
 }
 
 def adapt(text: str, v: str) -> str:
-    """v=voice → вставляем нужные формы."""
+    """
+    Заменяет плейс-холдеры на формы «ты» (Joy) или «вы» (Sber/Athena),
+    + корректирует род и слово «помог/помогла».
+    """
     is_ty = v == "joy"
-    rep   = {k: (ty if is_ty else vy) for k,(ty,vy) in PH.items()}
-    # муж./жен. род для «ready»
-    if not is_ty and v != "athena":
+    rep   = {k: (ty if is_ty else vy) for k, (ty, vy) in PH.items()}
+
+    # {ready}: муж. род только у Sber
+    if not is_ty and v == "sber":
         rep["{ready}"] = "готов"
     elif not is_ty and v == "athena":
         rep["{ready}"] = "готова"
+
+    # {help}: жен. род для Joy и Athena, муж. для Sber
+    rep["{help}"] = "помогла" if v in ("joy", "athena") else "помог"
+
     for k, val in rep.items():
         text = text.replace(k, val)
     return text
 
-URL_RE = re.compile(r'https?://\S+|<[^>]+>')
+URL_RE = re.compile(r'https?://\S+|<[^>]+>')     # скрываем озвучку URL
 
 # ---------- runtime-state -----------------------------------------
 user_state: dict[str, dict[str, bool | str]] = {}
@@ -74,7 +83,7 @@ help_phrases: Final = {"помощь","help","что ты умеешь","как 
 # ---------- health ------------------------------------------------
 @app.route("/health", methods=["GET","HEAD"])
 def health() -> Response:
-    return jsonify({"status":"ok","users":len(user_state)})
+    return jsonify({"status": "ok", "users": len(user_state)})
 
 # ---------- webhook ----------------------------------------------
 @app.route("/webhook", methods=["POST"])
@@ -95,9 +104,9 @@ def handle_smartapp():
         return jsonify(default_error(data))
 
     st = user_state.setdefault(user_id, {
-        "welcomed": False,"awaiting": False,
-        "awaiting_login": False,"awaiting_password": False,
-        "temp_login": "","registered": None
+        "welcomed": False, "awaiting": False,
+        "awaiting_login": False, "awaiting_password": False,
+        "temp_login": "", "registered": None
     })
     if st["registered"] is None:
         st["registered"] = check_device_registered(user_id)
@@ -107,7 +116,7 @@ def handle_smartapp():
         st["welcomed"] = True
         return jsonify(answer(adapt(
             "Привет! Я «Дримембер» — {your} дневник снов.\n"
-            "{say} «Запиши сон» или «Помощь», чтобы я помог {you}.", v), data))
+            "{say} «Запиши сон» или «Помощь», чтобы я {help} {you}.", v), data))
 
     if text == "":
         return jsonify(answer(adapt(
@@ -129,7 +138,7 @@ def handle_smartapp():
     if st["awaiting_login"]:
         if len(text) < 3 or not re.fullmatch(r'[a-z0-9_-]+', text):
             return jsonify(answer(adapt(
-                "Логин ≥3 символов, буквы, цифры, «-»,«_». {repeat} логин.", v), data))
+                "Логин ≥3 символов, буквы, цифры, «-», «_». {repeat} логин.", v), data))
         st["temp_login"] = text
         st["awaiting_login"] = False
         st["awaiting_password"] = True
@@ -192,7 +201,7 @@ def handle_smartapp():
 
 # ---------- answer / default --------------------------------------
 def answer(text: str, data: dict, end_session: bool = False) -> dict:
-    pronounce = URL_RE.sub("сайте", text)        # ссылки ≠ озвучиваем
+    pronounce = URL_RE.sub("сайте", text)     # не озвучиваем ссылки
     return {
         "messageName": "ANSWER_TO_USER",
         "sessionId": data["sessionId"],
