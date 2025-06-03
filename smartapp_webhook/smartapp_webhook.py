@@ -271,7 +271,7 @@ def handle_smartapp():
             resp.raise_for_status()
             return jsonify(answer(
                 adapt("Сон записан! Хорошего дня 🤍\n"
-                      "Записи на сайте: <https://dreamember.onrender.com/>", v),
+                      "Посмотреть записи на сайте: <https://dreamember.onrender.com/>", v),
                 data, suggestions=["Запиши сон"]
             ))
         except Exception:
